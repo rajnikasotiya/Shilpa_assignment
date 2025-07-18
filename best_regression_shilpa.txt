@@ -1,61 +1,65 @@
+# Insurance Premium Prediction - Explained Line-by-Line (with Automatic Feature Selection)
+
+# 1. Importing Required Libraries
 import pandas as pd
 import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
-
 from sklearn.model_selection import train_test_split, GridSearchCV, KFold
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import mean_squared_log_error, make_scorer
-
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from xgboost import XGBRegressor
+from sklearn.feature_selection import SelectFromModel  # For automatic feature selection
 
-df = pd.read_csv("train.csv")  # Replace with your dataset path if different
-print("Columns:\n", df.columns.tolist())
-df.head()
+# 2. Load Dataset
+df = pd.read_csv("train.csv")
 
+# 3. Initial Data Exploration
 df.info()
 df.describe()
 df.isna().sum()
-
-# Visualize target variable
 sns.histplot(df['Premium Amount'], kde=True)
-plt.title('Premium Amount Distribution')
 
-# Log-transform skewed income
+# 4. Feature Engineering
 df['log_income'] = np.log1p(df['Annual Income'])
-
-# Ratio and interaction features
 df['dependent_ratio'] = df['Number of Dependents'] / (df['Insurance Duration'] + 1)
 df['age_duration_interaction'] = df['Age'] * df['Insurance Duration']
 
-
-# Define features & target
-features = ['Age', 'log_income', 'dependent_ratio', 'age_duration_interaction',
-            'Education Level', 'Occupation', 'Health Score', 'Policy Type',
-            'Previous Claims', 'Vehicle Age', 'Credit Score', 'Exercise Frequency',
-            'Smoking Status', 'Property Type']
-
-X = df[features]
+# 5. Define Input and Target Variables (No manual feature selection)
+X = df.drop(columns=['id', 'Premium Amount', 'Policy Start Date'])
 y = df['Premium Amount']
 
-# Split into train/test sets
+# Split the data
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
 # Identify column types
 num_cols = X.select_dtypes(include=np.number).columns.tolist()
 cat_cols = X.select_dtypes(include='object').columns.tolist()
 
-# Preprocessor
+# Preprocessing pipeline
 preprocessor = ColumnTransformer([
     ('num', StandardScaler(), num_cols),
     ('cat', OneHotEncoder(drop='first'), cat_cols)
 ])
 
+# Automatic feature selection using Random Forest importance
+feature_selector = Pipeline([
+    ('pre', preprocessor),
+    ('selector', SelectFromModel(RandomForestRegressor(n_estimators=100, random_state=42)))
+])
 
-# Define models with hyperparameters
+X_train_transformed = feature_selector.fit_transform(X_train, y_train)
+X_test_transformed = feature_selector.transform(X_test)
+
+# Store selected feature mask for interpretation
+selected_features_mask = feature_selector.named_steps['selector'].get_support()
+selected_feature_names = np.array(preprocessor.get_feature_names_out())[selected_features_mask]
+print("Selected Features:", selected_feature_names)
+
+# 6. Define Models and Hyperparameters
 models = {
     'XGBoost': (XGBRegressor(random_state=42), {
         'model__n_estimators': [100, 200],
@@ -77,28 +81,32 @@ models = {
 cv = KFold(n_splits=5, shuffle=True, random_state=42)
 msle = make_scorer(mean_squared_log_error, greater_is_better=False)
 
-# Grid search on each model
+# 7. Model Training with Selected Features
 best_models = {}
 for name, (model, params) in models.items():
     pipe = Pipeline([
-        ('pre', preprocessor),
         ('model', model)
     ])
+
     grid = GridSearchCV(pipe, param_grid=params, scoring=msle, cv=cv, verbose=0, n_jobs=-1)
-    grid.fit(X_train, y_train)
+    grid.fit(X_train_transformed, y_train)
     best_models[name] = grid
     print(f"{name} RMSLE: {np.sqrt(-grid.best_score_):.5f}")
 
-
+# 8. Test Evaluation
 for name, model in best_models.items():
-    y_pred = model.predict(X_test)
+    y_pred = model.predict(X_test_transformed)
     rmsle = np.sqrt(mean_squared_log_error(y_test, y_pred))
     print(f"{name} Test RMSLE: {rmsle:.5f}")
 
-
-# Find best based on test RMSLE
-results = {name: np.sqrt(mean_squared_log_error(y_test, model.predict(X_test)))
-           for name, model in best_models.items()}
-
-best_model_name = min(results, key=results.get)
-print(f"\n🏆 Best model: {best_model_name} with Test RMSLE = {results[best_model_name]:.5f}")
+# 9. Feature Importance Plot (from Random Forest)
+rf_model = RandomForestRegressor(n_estimators=100, random_state=42)
+rf_model.fit(X_train_transformed, y_train)
+importances = rf_model.feature_importances_
+plt.figure(figsize=(10, 6))
+sns.barplot(x=importances, y=selected_feature_names)
+plt.title("Feature Importances from Random Forest")
+plt.xlabel("Importance")
+plt.ylabel("Features")
+plt.tight_layout()
+plt.show()
