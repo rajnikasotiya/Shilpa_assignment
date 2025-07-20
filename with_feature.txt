@@ -1,0 +1,63 @@
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.preprocessing import LabelEncoder
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+
+# Load dataset
+df = pd.read_csv('insurance.csv')
+
+# --- Step 1: Feature Engineering ---
+df['IsSmoker'] = df['SmokingStatus'].apply(lambda x: 1 if x == 'Yes' else 0)
+df['IsMarried'] = df['MaritalStatus'].apply(lambda x: 1 if x == 'Married' else 0)
+
+# Convert time column to hour if present
+if 'PolicyStartTime' in df.columns:
+    df['PolicyHour'] = pd.to_datetime(df['PolicyStartTime'], format='%H:%M.%S').dt.hour
+    df.drop(columns=['PolicyStartTime'], inplace=True)
+
+# Drop ID column if present
+df.drop(columns=[col for col in ['ID'] if col in df.columns], inplace=True)
+
+# --- Step 2: Encode categorical variables ---
+cat_cols = df.select_dtypes(include='object').columns
+for col in cat_cols:
+    le = LabelEncoder()
+    df[col] = le.fit_transform(df[col].astype(str))
+
+# --- Step 3: Define features and target ---
+X = df.drop(columns=['PremiumAmount'])
+y = df['PremiumAmount']
+
+# Split data
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# --- Step 4: Feature Selection using Feature Importance ---
+gbr_temp = GradientBoostingRegressor().fit(X_train, y_train)
+importances = pd.Series(gbr_temp.feature_importances_, index=X_train.columns)
+
+# Select top N features (e.g., top 10)
+top_features = importances.sort_values(ascending=False).head(10).index.tolist()
+X_train_selected = X_train[top_features]
+X_test_selected = X_test[top_features]
+
+# --- Step 5: Gradient Boosting with Hyperparameter Tuning ---
+param_grid = {
+    'n_estimators': [50, 100],
+    'learning_rate': [0.05, 0.1],
+    'max_depth': [2, 3, 4]
+}
+
+grid = GridSearchCV(GradientBoostingRegressor(random_state=42), param_grid, cv=3, scoring='r2')
+grid.fit(X_train_selected, y_train)
+
+# --- Step 6: Evaluate the Best Model ---
+best_model = grid.best_estimator_
+preds = best_model.predict(X_test_selected)
+
+print("Best Parameters:", grid.best_params_)
+print("R2 Score:", r2_score(y_test, preds))
+print("MAE:", mean_absolute_error(y_test, preds))
+print("RMSE:", np.sqrt(mean_squared_error(y_test, preds)))
+print("\nSelected Features:", top_features)
