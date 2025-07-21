@@ -1,0 +1,145 @@
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.linear_model import LinearRegression, Ridge, Lasso
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.preprocessing import LabelEncoder
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from xgboost import XGBRegressor
+
+# --- Step 1: Load data ---
+df = pd.read_csv('insurance.csv')
+
+# --- Step 2: Drop rows with missing target ---
+df.dropna(subset=['PremiumAmount'], inplace=True)
+
+# --- Step 3: Handle missing values ---
+for col in df.select_dtypes(include=['float64', 'int64']).columns:
+    df[col].fillna(df[col].median(), inplace=True)
+
+for col in df.select_dtypes(include='object').columns:
+    df[col].fillna(df[col].mode()[0], inplace=True)
+
+# --- Step 4: Feature Engineering ---
+df['IsSmoker'] = df['SmokingStatus'].apply(lambda x: 1 if x == 'Yes' else 0)
+df['IsMarried'] = df['MaritalStatus'].apply(lambda x: 1 if x == 'Married' else 0)
+
+if 'PolicyStartTime' in df.columns:
+    df['PolicyHour'] = pd.to_datetime(df['PolicyStartTime'], errors='coerce', format='%H:%M.%S').dt.hour
+    df.drop(columns=['PolicyStartTime'], inplace=True)
+
+def bmi_category(bmi):
+    if bmi < 18.5:
+        return 'Underweight'
+    elif bmi < 25:
+        return 'Normal'
+    elif bmi < 30:
+        return 'Overweight'
+    else:
+        return 'Obese'
+
+df['BMICategory'] = df['BMI'].apply(bmi_category)
+
+def age_group(age):
+    if age < 18:
+        return 'Child'
+    elif age < 60:
+        return 'Adult'
+    else:
+        return 'Senior'
+
+df['AgeGroup'] = df['Age'].apply(age_group)
+df['BMI_Smoker'] = df['BMI'] * df['IsSmoker']
+df['Age_Smoker'] = df['Age'] * df['IsSmoker']
+df['IsObese'] = df['BMI'].apply(lambda x: 1 if x >= 30 else 0)
+
+df.drop(columns=[col for col in ['ID'] if col in df.columns], inplace=True)
+
+cat_cols = df.select_dtypes(include='object').columns
+for col in cat_cols:
+    le = LabelEncoder()
+    df[col] = le.fit_transform(df[col].astype(str))
+
+# --- Step 5: Train/test split ---
+X = df.drop(columns=['PremiumAmount'])
+y = df['PremiumAmount']
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# --- Step 6: Feature Selection (Gradient Boosting) ---
+gbr_temp = GradientBoostingRegressor().fit(X_train, y_train)
+importances = pd.Series(gbr_temp.feature_importances_, index=X_train.columns)
+top_features = importances.sort_values(ascending=False).head(10).index.tolist()
+
+X_train_sel = X_train[top_features]
+X_test_sel = X_test[top_features]
+
+# --- Step 7: Model Training ---
+models = {
+    "Linear Regression": LinearRegression(),
+    "Ridge": Ridge(),
+    "Lasso": Lasso(),
+    "Random Forest": RandomForestRegressor(random_state=42),
+    "Gradient Boosting": GradientBoostingRegressor(random_state=42),
+    "XGBoost": XGBRegressor(random_state=42, verbosity=0)
+}
+
+results = []
+model_objects = {}
+
+for name, model in models.items():
+    model.fit(X_train_sel, y_train)
+    preds = model.predict(X_test_sel)
+    r2 = r2_score(y_test, preds)
+    mae = mean_absolute_error(y_test, preds)
+    rmse = np.sqrt(mean_squared_error(y_test, preds))
+    results.append({'Model': name, 'R2': r2, 'MAE': mae, 'RMSE': rmse})
+    model_objects[name] = model
+
+results_df = pd.DataFrame(results).sort_values(by='R2', ascending=False)
+print("🔍 Model Comparison:")
+print(results_df)
+
+# --- Step 8: Tune the Best Model ---
+best_model_name = results_df.iloc[0]['Model']
+print(f"\n🏆 Best Model: {best_model_name}")
+
+param_grids = {
+    "Ridge": {'alpha': [0.1, 1.0, 10.0]},
+    "Lasso": {'alpha': [0.01, 0.1, 1.0]},
+    "Random Forest": {
+        'n_estimators': [50, 100],
+        'max_depth': [3, 5, None]
+    },
+    "Gradient Boosting": {
+        'n_estimators': [50, 100],
+        'learning_rate': [0.05, 0.1],
+        'max_depth': [2, 3, 4]
+    },
+    "XGBoost": {
+        'n_estimators': [50, 100],
+        'learning_rate': [0.05, 0.1],
+        'max_depth': [3, 4, 5]
+    }
+}
+
+if best_model_name in param_grids:
+    print(f"\n🔧 Tuning hyperparameters for {best_model_name}...")
+    model = model_objects[best_model_name]
+    grid = GridSearchCV(model, param_grids[best_model_name], cv=3, scoring='r2', n_jobs=-1)
+    grid.fit(X_train_sel, y_train)
+
+    best_model = grid.best_estimator_
+    best_params = grid.best_params_
+
+    preds = best_model.predict(X_test_sel)
+    r2 = r2_score(y_test, preds)
+    mae = mean_absolute_error(y_test, preds)
+    rmse = np.sqrt(mean_squared_error(y_test, preds))
+
+    print("\n✅ Final Tuned Model Evaluation:")
+    print(f"Best Params: {best_params}")
+    print(f"R2: {r2:.4f}")
+    print(f"MAE: {mae:.2f}")
+    print(f"RMSE: {rmse:.2f}")
+else:
+    print(f"No hyperparameter tuning available for: {best_model_name}")
