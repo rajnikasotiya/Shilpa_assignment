@@ -1,0 +1,142 @@
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split, cross_val_score, GridSearchCV
+from sklearn.pipeline import Pipeline
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.impute import SimpleImputer
+from sklearn.linear_model import LinearRegression, Ridge, Lasso
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from xgboost import XGBRegressor
+from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
+import warnings
+warnings.filterwarnings('ignore')
+
+# ----------------------
+# 1. Load and sample data
+# ----------------------
+df = pd.read_csv("train.csv")
+
+# Optional sampling to speed up
+df = df.sample(frac=0.05, random_state=42).reset_index(drop=True)
+
+# ----------------------
+# 2. Target and feature separation
+# ----------------------
+target = 'Premium Amount'
+X = df.drop(columns=[target])
+y = df[target]
+
+# ----------------------
+# 3. Feature classification
+# ----------------------
+numerical_cols = X.select_dtypes(include=['int64', 'float64']).columns.tolist()
+categorical_cols = X.select_dtypes(include=['object', 'category']).columns.tolist()
+
+# ----------------------
+# 4. Preprocessing pipelines
+# ----------------------
+# Numerical pipeline
+numerical_pipeline = Pipeline(steps=[
+    ('imputer', SimpleImputer(strategy='mean')),
+    ('scaler', StandardScaler())
+])
+
+# Categorical pipeline
+categorical_pipeline = Pipeline(steps=[
+    ('imputer', SimpleImputer(strategy='most_frequent')),
+    ('encoder', OneHotEncoder(handle_unknown='ignore', sparse=False))
+])
+
+# Combine
+preprocessor = ColumnTransformer(transformers=[
+    ('num', numerical_pipeline, numerical_cols),
+    ('cat', categorical_pipeline, categorical_cols)
+])
+
+# ----------------------
+# 5. Define models
+# ----------------------
+models = {
+    'Linear': LinearRegression(),
+    'Ridge': Ridge(),
+    'Lasso': Lasso(),
+    'RandomForest': RandomForestRegressor(),
+    'GradientBoosting': GradientBoostingRegressor(),
+    'XGBoost': XGBRegressor(objective='reg:squarederror', verbosity=0)
+}
+
+# ----------------------
+# 6. Evaluate models
+# ----------------------
+results = []
+
+for name, model in models.items():
+    pipeline = Pipeline(steps=[
+        ('preprocess', preprocessor),
+        ('model', model)
+    ])
+    pipeline.fit(X, y)
+    y_pred = pipeline.predict(X)
+    
+    results.append({
+        'Model': name,
+        'R2 Score': r2_score(y, y_pred),
+        'MAE': mean_absolute_error(y, y_pred),
+        'RMSE': np.sqrt(mean_squared_error(y, y_pred))
+    })
+
+results_df = pd.DataFrame(results).sort_values(by='R2 Score', ascending=False)
+print("Model Comparison:\n", results_df)
+
+# ----------------------
+# 7. Select best model & tune it
+# ----------------------
+best_model_name = results_df.iloc[0]['Model']
+print(f"\nBest Model: {best_model_name}")
+
+# Choose model and define params for tuning
+if best_model_name == 'GradientBoosting':
+    base_model = GradientBoostingRegressor()
+    param_grid = {
+        'model__n_estimators': [100, 200],
+        'model__learning_rate': [0.05, 0.1],
+        'model__max_depth': [3, 5]
+    }
+elif best_model_name == 'RandomForest':
+    base_model = RandomForestRegressor()
+    param_grid = {
+        'model__n_estimators': [100, 200],
+        'model__max_depth': [None, 10]
+    }
+elif best_model_name == 'XGBoost':
+    base_model = XGBRegressor(objective='reg:squarederror')
+    param_grid = {
+        'model__n_estimators': [100, 200],
+        'model__learning_rate': [0.05, 0.1],
+        'model__max_depth': [3, 5]
+    }
+else:
+    base_model = models[best_model_name]
+    param_grid = {}  # No tuning for basic models
+
+# Grid Search
+pipeline = Pipeline(steps=[
+    ('preprocess', preprocessor),
+    ('model', base_model)
+])
+
+if param_grid:
+    grid = GridSearchCV(pipeline, param_grid, cv=3, scoring='r2', n_jobs=-1)
+    grid.fit(X, y)
+    best_model = grid.best_estimator_
+    print("Best Params:", grid.best_params_)
+else:
+    best_model = pipeline.fit(X, y)
+
+# Final Evaluation
+y_pred_final = best_model.predict(X)
+print("\nFinal Evaluation:")
+print("R²:", r2_score(y, y_pred_final))
+print("MAE:", mean_absolute_error(y, y_pred_final))
+print("RMSE:", np.sqrt(mean_squared_error(y, y_pred_final)))
