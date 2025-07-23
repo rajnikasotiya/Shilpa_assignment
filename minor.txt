@@ -1,0 +1,6 @@
+elif best_model_name == "SVM":
+    from shap import LinearExplainer
+
+    explainer = LinearExplainer(best_model, X_train_tfidf, feature_perturbation="interventional")
+    shap_values = explainer(X_explain)
+    shap.summary_plot(shap_values, features=X_explain, feature_names=feature_names)
