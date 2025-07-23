@@ -1,0 +1,150 @@
+# -------------------------------
+# 1. Imports
+# -------------------------------
+import pandas as pd
+import numpy as np
+import torch
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
+from sklearn.metrics import classification_report, f1_score
+
+from torch.utils.data import Dataset
+from transformers import (
+    AutoTokenizer,
+    AutoModelForSequenceClassification,
+    Trainer,
+    TrainingArguments,
+    DataCollatorWithPadding,
+    pipeline
+)
+
+import shap
+import matplotlib.pyplot as plt
+
+# -------------------------------
+# 2. Configuration
+# -------------------------------
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model_name = "mental/mental-bert-base-uncased"
+
+# -------------------------------
+# 3. Load and Preprocess Data
+# -------------------------------
+df = pd.read_csv("mental_health.csv")
+df['Text'] = df['Text'].astype(str).str.strip()
+df['Label'] = df['Label'].astype(str).str.strip()
+
+label_encoder = LabelEncoder()
+df['label'] = label_encoder.fit_transform(df['Label'])
+
+train_texts, val_texts, train_labels, val_labels = train_test_split(
+    df['Text'].tolist(), df['label'].tolist(), test_size=0.2, stratify=df['label'], random_state=42
+)
+
+# -------------------------------
+# 4. Load MentalBERT Model
+# -------------------------------
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForSequenceClassification.from_pretrained(model_name, num_labels=len(label_encoder.classes_))
+model.to(device)
+
+# -------------------------------
+# 5. Dataset Definition
+# -------------------------------
+class MentalHealthDataset(Dataset):
+    def __init__(self, texts, labels, tokenizer):
+        self.encodings = tokenizer(texts, truncation=True, padding=True, return_tensors='pt')
+        self.labels = torch.tensor(labels)
+
+    def __len__(self):
+        return len(self.labels)
+
+    def __getitem__(self, idx):
+        item = {key: val[idx] for key, val in self.encodings.items()}
+        item["labels"] = self.labels[idx]
+        return item
+
+train_dataset = MentalHealthDataset(train_texts, train_labels, tokenizer)
+val_dataset = MentalHealthDataset(val_texts, val_labels, tokenizer)
+
+# -------------------------------
+# 6. Training Configuration
+# -------------------------------
+training_args = TrainingArguments(
+    output_dir="./mentalbert-results",
+    evaluation_strategy="epoch",
+    save_strategy="epoch",
+    learning_rate=2e-5,
+    per_device_train_batch_size=16,
+    per_device_eval_batch_size=32,
+    num_train_epochs=4,
+    weight_decay=0.01,
+    logging_dir="./logs",
+    load_best_model_at_end=True,
+    metric_for_best_model="f1"
+)
+
+def compute_metrics(eval_pred):
+    logits, labels = eval_pred
+    preds = np.argmax(logits, axis=1)
+    f1 = f1_score(labels, preds, average="macro")
+    return {"f1": f1}
+
+# -------------------------------
+# 7. Trainer Setup & Training
+# -------------------------------
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=train_dataset,
+    eval_dataset=val_dataset,
+    tokenizer=tokenizer,
+    data_collator=DataCollatorWithPadding(tokenizer),
+    compute_metrics=compute_metrics,
+)
+
+trainer.train()
+
+# -------------------------------
+# 8. Evaluation
+# -------------------------------
+preds = trainer.predict(val_dataset)
+y_pred = np.argmax(preds.predictions, axis=1)
+
+print("\n📊 Classification Report:")
+print(classification_report(val_labels, y_pred, target_names=label_encoder.classes_))
+
+# Save the trained model and tokenizer
+model.save_pretrained("./mentalbert-mental-health")
+tokenizer.save_pretrained("./mentalbert-mental-health")
+
+# -------------------------------
+# 9. SHAP Visualization
+# -------------------------------
+
+# Use pipeline API for SHAP
+text_classifier = pipeline("text-classification", model=model, tokenizer=tokenizer,
+                           return_all_scores=True, device=0 if torch.cuda.is_available() else -1)
+
+# Define probability prediction wrapper for SHAP
+def predict_proba(texts):
+    preds = text_classifier(texts)
+    return np.array([[p['score'] for p in pred] for pred in preds])
+
+# Select sample texts
+sample_texts = val_texts[:10]
+
+# Create SHAP explainer
+explainer = shap.Explainer(predict_proba, shap.maskers.Text(tokenizer))
+
+# Compute SHAP values
+shap_values = explainer(sample_texts)
+
+# Plot SHAP explanation for the first sample
+print("\n🧠 SHAP Explanation for Sample 0:")
+shap.plots.text(shap_values[0])
+
+# Optional: Show more examples
+for i in range(1, 3):
+    print(f"\n🧠 SHAP Explanation for Sample {i}:")
+    shap.plots.text(shap_values[i])
