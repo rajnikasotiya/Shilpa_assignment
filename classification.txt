@@ -1,0 +1,140 @@
+import pandas as pd
+import numpy as np
+import re
+import matplotlib.pyplot as plt
+import seaborn as sns
+import shap
+import warnings
+warnings.filterwarnings("ignore")
+
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
+from sklearn.feature_extraction.text import TfidfVectorizer
+
+# Classifiers
+from sklearn.linear_model import LogisticRegression
+from sklearn.naive_bayes import MultinomialNB
+from sklearn.svm import LinearSVC
+from sklearn.ensemble import RandomForestClassifier
+from xgboost import XGBClassifier
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.neural_network import MLPClassifier
+
+# Evaluation
+from sklearn.metrics import (
+    classification_report, accuracy_score, f1_score,
+    precision_score, recall_score, confusion_matrix
+)
+
+# -----------------------------
+# 1. Load and preprocess data
+# -----------------------------
+df = pd.read_csv("mental_health.csv")
+df.dropna(subset=['Text', 'Label'], inplace=True)
+df['Label'] = df['Label'].str.strip()
+
+def clean_text(text):
+    text = text.lower()
+    text = re.sub(r'https?://\S+|www\.\S+', '', text)
+    text = re.sub(r'<.*?>+', '', text)
+    text = re.sub(r'[^a-zA-Z\s]', '', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+df['clean_text'] = df['Text'].apply(clean_text)
+
+# Encode labels
+label_encoder = LabelEncoder()
+df['encoded_label'] = label_encoder.fit_transform(df['Label'])
+
+# Split data
+X_train, X_test, y_train, y_test = train_test_split(
+    df['clean_text'], df['encoded_label'],
+    test_size=0.2, stratify=df['encoded_label'], random_state=42
+)
+
+# TF-IDF
+tfidf = TfidfVectorizer(max_features=5000, ngram_range=(1, 2), stop_words='english')
+X_train_tfidf = tfidf.fit_transform(X_train)
+X_test_tfidf = tfidf.transform(X_test)
+
+# --------------------------------------------
+# 2. Define and evaluate multiple classifiers
+# --------------------------------------------
+models = {
+    "Logistic Regression": LogisticRegression(max_iter=1000),
+    "Naive Bayes": MultinomialNB(),
+    "Linear SVM": LinearSVC(),
+    "Random Forest": RandomForestClassifier(n_estimators=100),
+    "XGBoost": XGBClassifier(use_label_encoder=False, eval_metric='mlogloss'),
+    "KNN": KNeighborsClassifier(n_neighbors=5),
+    "MLP Neural Net": MLPClassifier(hidden_layer_sizes=(100,), max_iter=500)
+}
+
+best_model_name = None
+best_model = None
+best_f1 = 0.0
+
+print("\n📊 MODEL EVALUATION:\n")
+
+for name, model in models.items():
+    model.fit(X_train_tfidf, y_train)
+    y_pred = model.predict(X_test_tfidf)
+
+    acc = accuracy_score(y_test, y_pred)
+    f1 = f1_score(y_test, y_pred, average='macro')
+    prec = precision_score(y_test, y_pred, average='macro')
+    rec = recall_score(y_test, y_pred, average='macro')
+
+    print(f"🔍 {name}")
+    print(f"   ✅ Accuracy: {acc:.4f}")
+    print(f"   ✅ F1 Score: {f1:.4f}")
+    print(f"   ✅ Precision: {prec:.4f}")
+    print(f"   ✅ Recall: {rec:.4f}")
+    
+    if f1 > best_f1:
+        best_model_name = name
+        best_model = model
+        best_f1 = f1
+
+    # Confusion Matrix
+    cm = confusion_matrix(y_test, y_pred)
+    plt.figure(figsize=(6, 4))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                xticklabels=label_encoder.classes_,
+                yticklabels=label_encoder.classes_)
+    plt.title(f"Confusion Matrix - {name}")
+    plt.xlabel("Predicted")
+    plt.ylabel("Actual")
+    plt.tight_layout()
+    plt.show()
+
+# --------------------------------------------
+# 3. SHAP Explanation for Best Model
+# --------------------------------------------
+print(f"\n🏆 Best Model Based on F1 Score: {best_model_name} ({best_f1:.4f})")
+
+supported_models = ["Logistic Regression", "Linear SVM", "Random Forest", "XGBoost"]
+if best_model_name in supported_models:
+    print("🔍 Running SHAP on best model...")
+
+    feature_names = tfidf.get_feature_names_out()
+
+    if best_model_name in ["Logistic Regression", "Linear SVM"]:
+        explainer = shap.Explainer(best_model, X_train_tfidf, feature_names=feature_names)
+    elif best_model_name == "Random Forest":
+        explainer = shap.Explainer(best_model, X_train_tfidf, feature_names=feature_names, algorithm="tree")
+    elif best_model_name == "XGBoost":
+        explainer = shap.Explainer(best_model, X_train_tfidf, feature_names=feature_names)
+
+    sample_idx = 10
+    shap_values = explainer(X_test_tfidf[sample_idx])
+
+    print(f"\n🧠 Text Sample:\n{X_test.iloc[sample_idx]}")
+    print(f"📌 True Label: {label_encoder.inverse_transform([y_test.iloc[sample_idx]])[0]}")
+    pred_label = label_encoder.inverse_transform([best_model.predict(X_test_tfidf[sample_idx])[0]])[0]
+    print(f"🔮 Predicted Label: {pred_label}")
+
+    shap.plots.text(shap_values)
+else:
+    print(f"⚠️ SHAP not applied: '{best_model_name}' is not natively supported by SHAP.")
