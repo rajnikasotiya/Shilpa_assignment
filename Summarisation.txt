@@ -1,0 +1,64 @@
+from transformers import pipeline
+from datasets import load_dataset
+import evaluate
+
+# Load healthcare dataset (e.g., CHQ-Summ)
+dataset = load_dataset("yadav-shweta/CHQ-Summ")
+texts = dataset["train"]["question_text"]
+references = dataset["train"]["summary"]
+
+# Define summarization models
+model_names = [
+    "umeshramya/t5_small_medical_512",
+    "Falconsai/medical_summarization",
+    "facebook/bart-large-cnn"  # general-purpose baseline
+]
+
+# Run summarization
+summaries = {}
+for name in model_names:
+    summarizer = pipeline("summarization", model=name, tokenizer=name)
+    outputs = summarizer(texts[:100], max_length=60, min_length=20, truncation=True)
+    summaries[name] = [output["summary_text"] for output in outputs]
+
+# Load evaluation metrics
+rouge = evaluate.load("rouge")
+bertscore = evaluate.load("bertscore")
+questeval = evaluate.load("questeval")
+
+# Evaluate models
+results = {}
+
+for name, preds in summaries.items():
+    refs = references[:len(preds)]
+    
+    print(f"\nEvaluating model: {name}")
+    
+    # ROUGE scores
+    rouge_scores = rouge.compute(predictions=preds, references=refs)
+    
+    # BERTScore (semantic similarity)
+    bert_scores = bertscore.compute(predictions=preds, references=refs, lang="en")
+    
+    # QuestEval (factual consistency)
+    quest_scores = questeval.compute(predictions=preds, sources=texts[:len(preds)])
+    
+    # Store all metrics
+    results[name] = {
+        "rouge1": rouge_scores["rouge1"],
+        "rouge2": rouge_scores["rouge2"],
+        "rougeL": rouge_scores["rougeL"],
+        "bertscore_precision": sum(bert_scores['precision']) / len(bert_scores['precision']),
+        "bertscore_recall": sum(bert_scores['recall']) / len(bert_scores['recall']),
+        "bertscore_f1": sum(bert_scores['f1']) / len(bert_scores['f1']),
+        "questeval_score": quest_scores["score"]
+    }
+
+# Print results
+for model, metrics in results.items():
+    print(f"\n🔍 Results for {model}")
+    print(f"ROUGE-1: {metrics['rouge1']:.4f}")
+    print(f"ROUGE-2: {metrics['rouge2']:.4f}")
+    print(f"ROUGE-L: {metrics['rougeL']:.4f}")
+    print(f"BERTScore (F1): {metrics['bertscore_f1']:.4f}")
+    print(f"QuestEval Score: {metrics['questeval_score']:.4f}")
