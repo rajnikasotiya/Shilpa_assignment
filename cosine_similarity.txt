@@ -32,7 +32,7 @@ def preprocess(text):
 df['clean_text'] = df['TEXT'].apply(preprocess)
 
 # Load BioBERT sentence model
-model = SentenceTransformer('pritamdeka/BioBERT-sentence')
+model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
 corpus = df['clean_text'].tolist()
 corpus_embeddings = model.encode(corpus, convert_to_tensor=True)
 
