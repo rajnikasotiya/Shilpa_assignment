@@ -59,3 +59,63 @@ for i in range(len(indices[0])):
     print(f"Score: {score:.4f}")
     print(f"Label: {df.iloc[idx]['label']}")
     print(f"Text: {df.iloc[idx]['TEXT'][:300]}...\n")
+
+
+
+
+
+
+query = "persistent cough and chest pain"
+query = "severe headaches and blurry vision"
+query = "kidney failure and dialysis treatment"
+query = "abdominal pain and liver issues"
+Absolutely! Here are some **example queries** you can try with your medical text similarity system:
+
+---
+
+### 🩺 **Symptom-based Queries**
+
+1. `"abdominal pain and nausea"`
+2. `"fever with chills and muscle aches"`
+3. `"shortness of breath and chest discomfort"`
+4. `"persistent dry cough and fatigue"`
+5. `"blurred vision and dizziness"`
+
+---
+
+### 🧬 **Condition-based Queries**
+
+6. `"symptoms of liver cirrhosis"`
+7. `"early signs of diabetes"`
+8. `"complications of high blood pressure"`
+9. `"treatment options for asthma"`
+10. `"how to manage chronic kidney disease"`
+
+---
+
+### 💊 **Treatment/Procedure Queries**
+
+11. `"insulin therapy for type 2 diabetes"`
+12. `"side effects of chemotherapy"`
+13. `"dialysis process and patient care"`
+14. `"rehabilitation after heart attack"`
+15. `"surgical treatment for gallstones"`
+
+---
+
+### 👩‍⚕️ **Medical Advice Style Queries**
+
+16. `"when to see a doctor for chest pain"`
+17. `"what causes sudden weight loss"`
+18. `"how to control cholesterol naturally"`
+19. `"can migraines cause vision loss"`
+20. `"how does smoking affect the lungs"`
+
+---
+
+### 💡 Tip:
+
+Start with queries that match the tone or style of the records in your `medical.dat` dataset. If your dataset is more technical or symptom-focused, use shorter, precise queries.
+
+---
+
