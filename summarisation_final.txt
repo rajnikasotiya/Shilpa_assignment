@@ -1,0 +1,99 @@
+import pandas as pd
+import torch
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, logging
+from evaluate import load
+
+# Suppress Hugging Face warnings
+logging.set_verbosity_error()
+
+# Device setup
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
+
+# Load evaluation metrics
+rouge = load("rouge")
+bertscore = load("bertscore")
+sacrebleu = load("sacrebleu")
+
+# List of model names
+model_names = [
+    "Falconsai/medical_summarization",
+    "umeshramya/t5_small_medical_512",
+    "facebook/bart-large-cnn"
+]
+
+# Load and prepare dataset
+def load_data(path):
+    df = pd.read_csv(path)
+    df = df.dropna(subset=["article", "abstract"])
+    df = df.sample(5, random_state=42)  # reduce sample for speed
+    return df
+
+# Generate summary
+def generate_summary(model, tokenizer, text, max_input_len=256, max_target_len=64):
+    inputs = tokenizer(text, return_tensors="pt", max_length=max_input_len, truncation=True).to(device)
+    with torch.no_grad():
+        outputs = model.generate(
+            inputs["input_ids"],
+            max_length=max_target_len,
+            num_beams=1,     # greedy decoding
+            do_sample=False
+        )
+    return tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+# Evaluate predictions
+def evaluate_summaries(references, predictions):
+    scores = {}
+
+    # ROUGE-L
+    rouge_scores = rouge.compute(predictions=predictions, references=references)
+    scores["rougeL"] = round(rouge_scores["rougeL"], 4)
+
+    # BERTScore
+    bert_scores = bertscore.compute(predictions=predictions, references=references, lang="en")
+    scores["bertscore_f1"] = round(sum(bert_scores["f1"]) / len(bert_scores["f1"]), 4)
+
+    # SacreBLEU
+    bleu_scores = sacrebleu.compute(predictions=predictions, references=[[ref] for ref in references])
+    scores["bleu"] = round(bleu_scores["score"], 4)
+
+    return scores
+
+# Main function
+def main():
+    df = load_data("train.csv")  # Update path if needed
+
+    references = df["abstract"].tolist()
+    source_texts = df["article"].tolist()
+    results = {}
+
+    for model_name in model_names:
+        print(f"\n🔍 Evaluating model: {model_name}")
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModelForSeq2SeqLM.from_pretrained(model_name).to(device)
+
+        predictions = []
+        for text in source_texts:
+            try:
+                summary = generate_summary(model, tokenizer, text)
+            except Exception as e:
+                print(f"⚠️ Error in summarizing: {e}")
+                summary = ""
+            predictions.append(summary)
+
+        metrics = evaluate_summaries(references, predictions)
+        results[model_name] = metrics
+
+        print(f"✅ Results for {model_name}: {metrics}")
+
+    # Final comparison
+    print("\n📊 Final Model Comparison:")
+    for model, scores in results.items():
+        print(f"{model}: {scores}")
+
+    # Identify best model by average of all metric scores
+    best_model = max(results.items(), key=lambda x: sum(x[1].values()) / len(x[1]))[0]
+    print(f"\n🏆 Best model based on average of rougeL, BERTScore F1, and BLEU: **{best_model}**")
+
+if __name__ == "__main__":
+    main()
