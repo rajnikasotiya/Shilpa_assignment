@@ -1,24 +1,24 @@
 # !pip install pandas nltk sentence-transformers faiss-cpu
 
 import pandas as pd
-import re
-import string
-import nltk
 import numpy as np
+import nltk
+import string
+import re
 import faiss
 from nltk.corpus import stopwords
 from nltk.stem import PorterStemmer
 from sentence_transformers import SentenceTransformer
 
-# Load the dataset
+# Load dataset
 df = pd.read_csv("medical.dat", sep="\t", names=["TEXT", "label"], encoding='utf-8')
 
-# NLTK setup
+# Download NLTK stopwords
 nltk.download('stopwords')
 stop_words = set(stopwords.words('english'))
 stemmer = PorterStemmer()
 
-# Preprocessing function
+# Text preprocessing function
 def preprocess(text):
     text = str(text).lower()
     text = re.sub(r'\d+', '', text)
@@ -29,37 +29,42 @@ def preprocess(text):
 
 df['clean_text'] = df['TEXT'].apply(preprocess)
 
-# Embeddings
+# Generate embeddings
 model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
 corpus = df['clean_text'].tolist()
 corpus_embeddings = model.encode(corpus, convert_to_numpy=True).astype('float32')
 
-# FAISS indexing
+# Normalize and index using FAISS
 faiss.normalize_L2(corpus_embeddings)
 dim = corpus_embeddings.shape[1]
 index = faiss.IndexFlatIP(dim)
 index.add(corpus_embeddings)
 
-# User query input
+# Get user query
 query = input("Enter your medical query: ")
 query_processed = preprocess(query)
 query_embedding = model.encode([query_processed], convert_to_numpy=True).astype('float32')
 faiss.normalize_L2(query_embedding)
 
-# Search top K
+# Search top-k similar results
 top_k = 5
 scores, indices = index.search(query_embedding, top_k)
 
-# Defensive conversion
-indices = np.atleast_2d(indices)
-scores = np.atleast_2d(scores)
+# Flatten and print results
+flat_indices = indices.flatten()
+flat_scores = scores.flatten()
 
-# Output
 print(f"\nQuery: {query}\n")
 print(f"Top {top_k} most similar entries:\n")
-for i in range(min(top_k, indices.shape[1])):
-    idx = int(indices[0][i])
-    score = float(scores[0][i])
+
+for i in range(min(top_k, len(flat_indices))):
+    idx = int(flat_indices[i])
+    score = float(flat_scores[i])
+    if idx >= len(df):
+        continue
+    text = df.iloc[idx]['TEXT']
+    text_str = str(text) if pd.notna(text) else "[No Text Found]"
+    label = df.iloc[idx]['label'] if pd.notna(df.iloc[idx]['label']) else "[No Label]"
     print(f"Rank {i+1} | Score: {score:.4f}")
-    print(f"Label: {df.iloc[idx]['label']}")
-    print(f"Text : {df.iloc[idx]['TEXT'][:300]}...\n")
+    print(f"Label: {label}")
+    print(f"Text : {text_str[:300]}...\n")
