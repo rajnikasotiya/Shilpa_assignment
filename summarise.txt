@@ -1,0 +1,105 @@
+import pandas as pd
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+from evaluate import load
+from tqdm import tqdm
+
+# ========================
+# Step 1: Load PubMed Dataset
+# ========================
+def load_data(path, sample_size=100):
+    df = pd.read_csv(path)
+    df = df[['article', 'summary']].dropna().reset_index(drop=True)
+    df = df.sample(sample_size, random_state=42).reset_index(drop=True)
+    return df
+
+# ========================
+# Step 2: Generate Summary
+# ========================
+def generate_summary(model, tokenizer, text, max_input_len=512, max_target_len=128):
+    inputs = tokenizer(text, return_tensors="pt", max_length=max_input_len, truncation=True)
+    outputs = model.generate(
+        inputs["input_ids"],
+        max_length=max_target_len,
+        num_beams=4,
+        early_stopping=True
+    )
+    return tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+# ========================
+# Step 3: Evaluate Model
+# ========================
+def evaluate_model(model, tokenizer, df, max_input_len=512, max_target_len=128):
+    rouge = load("rouge")
+    bertscore = load("bertscore")
+    bleu = load("bleu")
+
+    predictions = []
+    references = df["summary"].tolist()
+
+    print("Generating summaries...")
+    for article in tqdm(df["article"]):
+        pred = generate_summary(model, tokenizer, article, max_input_len, max_target_len)
+        predictions.append(pred)
+
+    print("Calculating ROUGE...")
+    rouge_scores = rouge.compute(predictions=predictions, references=references)
+
+    print("Calculating BERTScore...")
+    bert_scores = bertscore.compute(predictions=predictions, references=references, lang="en")
+
+    print("Calculating BLEU...")
+    # BLEU requires tokenized lists of words
+    bleu_scores = bleu.compute(predictions=[pred.split() for pred in predictions],
+                               references=[[ref.split()] for ref in references])
+
+    # Collecting average BERTScore F1
+    avg_bertscore_f1 = sum(bert_scores["f1"]) / len(bert_scores["f1"])
+
+    return {
+        "rouge1": rouge_scores["rouge1"],
+        "rouge2": rouge_scores["rouge2"],
+        "rougeL": rouge_scores["rougeL"],
+        "bleu": bleu_scores["bleu"],
+        "bertscore_f1": avg_bertscore_f1
+    }
+
+# ========================
+# Step 4: Main Pipeline
+# ========================
+def main():
+    # Path to the downloaded CSV file from Kaggle
+    data_path = './data/pubmed_article_summarization.csv'
+
+    # List of models to compare
+    model_names = [
+        "Falconsai/medical_summarization",
+        "umeshramya/t5_small_medical_512",
+        "facebook/bart-large-cnn"
+    ]
+
+    # Load dataset
+    df = load_data(data_path)
+
+    # Load models and tokenizers
+    models = {}
+    tokenizers = {}
+    for name in model_names:
+        print(f"\n🔄 Loading model: {name}")
+        tokenizers[name] = AutoTokenizer.from_pretrained(name)
+        models[name] = AutoModelForSeq2SeqLM.from_pretrained(name)
+
+    # Evaluate each model
+    all_scores = {}
+    for name in model_names:
+        print(f"\n🚀 Evaluating: {name}")
+        scores = evaluate_model(models[name], tokenizers[name], df)
+        all_scores[name] = scores
+        print(f"📊 Scores for {name}:\n{scores}")
+
+    # Find best model based on BERTScore F1
+    best_model = max(all_scores.items(), key=lambda x: x[1]['bertscore_f1'])
+    print(f"\n✅ Best Model (BERTScore F1): {best_model[0]}")
+    print(f"Scores: {best_model[1]}")
+
+if __name__ == "__main__":
+    main()
