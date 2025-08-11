@@ -1,0 +1,76 @@
+!pip install transformers accelerate bitsandbytes tqdm
+
+
+
+
+import torch
+import pandas as pd
+from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
+from tqdm import tqdm
+
+
+
+df = pd.read_csv("your_file.csv")  # replace with your CSV
+df.head()
+
+
+
+model_name = "tiiuae/falcon-7b-instruct"
+
+model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    device_map="auto",
+    load_in_4bit=True,
+    torch_dtype=torch.float16
+)
+
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+
+
+generator = pipeline(
+    "text-generation",
+    model=model,
+    tokenizer=tokenizer,
+    max_new_tokens=200,
+    temperature=0.2,
+    do_sample=False
+)
+
+
+
+
+prompt_template = """
+You are a biomedical named entity extraction model.
+Extract the following medical information from the given text:
+- Vital Signs
+- HPI (History of Present Illness)
+- Diagnosis
+- Medications
+- Allergies
+Return the output as a valid JSON object.
+
+Text: {text}
+"""
+
+
+
+batch_size = 5
+df["extraction"] = ""  # create column for results
+
+for start in tqdm(range(0, len(df), batch_size), desc="Processing"):
+    batch_contexts = df["context"].iloc[start:start+batch_size].tolist()
+    prompts = [prompt_template.format(text=ctx) for ctx in batch_contexts]
+
+    outputs = generator(prompts, batch_size=batch_size)
+
+    for idx, out in enumerate(outputs):
+        df.at[start+idx, "extraction"] = out[0]["generated_text"]
+
+    # Save partial progress every batch
+    df.to_csv("extracted_partial.csv", index=False)
+
+
+
+df.to_csv("extracted_medical_info.csv", index=False)
+df.head()
