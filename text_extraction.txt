@@ -1,0 +1,71 @@
+pip install pandas transformers accelerate
+
+
+import pandas as pd
+from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
+
+# Load MedAlpaca model
+model_name = "medalpaca/medalpaca-7b"  # open-source medical LLaMA variant
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    device_map="auto",
+    torch_dtype="auto"
+)
+
+# Create pipeline
+gen_pipe = pipeline(
+    "text-generation",
+    model=model,
+    tokenizer=tokenizer
+)
+
+# Prompt template
+def make_prompt(text):
+    return f"""
+You are a medical information extraction assistant.
+Extract the following details from the medical note below and return them strictly as a JSON object with lists as values:
+- visit_reason
+- diagnosis
+- past_medical_history
+- vital_signs
+- exam_results
+- lab_results
+- full_HPI
+- discharge_plan
+
+Medical Note:
+{text}
+
+Output format:
+{{
+  "visit_reason": [...],
+  "diagnosis": [...],
+  "past_medical_history": [...],
+  "vital_signs": [...],
+  "exam_results": [...],
+  "lab_results": [...],
+  "full_HPI": [...],
+  "discharge_plan": [...]
+}}
+"""
+
+# Extraction function
+def extract_with_prompt(note):
+    prompt = make_prompt(note)
+    response = gen_pipe(prompt, max_length=1024, do_sample=False)[0]["generated_text"]
+    # Keep only JSON part
+    json_part = response.split("{", 1)[-1]  # remove prompt from output
+    json_part = "{" + json_part
+    return json_part.strip()
+
+# Read CSV
+df = pd.read_csv("result.csv")
+
+# Apply extraction (single column)
+df["extracted_info"] = df["context"].apply(extract_with_prompt)
+
+# Save results
+df.to_csv("result_with_extractions.csv", index=False)
+
+print("✅ Prompt-based extraction complete. Saved to result_with_extractions.csv")
