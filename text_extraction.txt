@@ -1,71 +1,92 @@
-pip install pandas transformers accelerate
-
-
 import pandas as pd
 from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
 
-# Load MedAlpaca model
-model_name = "medalpaca/medalpaca-7b"  # open-source medical LLaMA variant
+# 1. Model name - Falcon 7B Instruct
+model_name = "tiiuae/falcon-7b-instruct"
+
+# 2. Load tokenizer and model (CPU-friendly but can be slow without GPU)
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 model = AutoModelForCausalLM.from_pretrained(
     model_name,
-    device_map="auto",
-    torch_dtype="auto"
+    torch_dtype="auto"  # lets HF decide precision
 )
 
-# Create pipeline
-gen_pipe = pipeline(
+# 3. Create pipeline
+generator = pipeline(
     "text-generation",
     model=model,
-    tokenizer=tokenizer
+    tokenizer=tokenizer,
+    max_new_tokens=512,
+    temperature=0.2
 )
 
-# Prompt template
-def make_prompt(text):
-    return f"""
-You are a medical information extraction assistant.
-Extract the following details from the medical note below and return them strictly as a JSON object with lists as values:
-- visit_reason
-- diagnosis
-- past_medical_history
-- vital_signs
-- exam_results
-- lab_results
-- full_HPI
-- discharge_plan
-
-Medical Note:
-{text}
-
-Output format:
-{{
-  "visit_reason": [...],
-  "diagnosis": [...],
-  "past_medical_history": [...],
-  "vital_signs": [...],
-  "exam_results": [...],
-  "lab_results": [...],
-  "full_HPI": [...],
-  "discharge_plan": [...]
-}}
-"""
-
-# Extraction function
-def extract_with_prompt(note):
-    prompt = make_prompt(note)
-    response = gen_pipe(prompt, max_length=1024, do_sample=False)[0]["generated_text"]
-    # Keep only JSON part
-    json_part = response.split("{", 1)[-1]  # remove prompt from output
-    json_part = "{" + json_part
-    return json_part.strip()
-
-# Read CSV
+# 4. Load CSV
 df = pd.read_csv("result.csv")
 
-# Apply extraction (single column)
-df["extracted_info"] = df["context"].apply(extract_with_prompt)
+# 5. Prepare new columns
+df["visit_reason"] = ""
+df["diagnosis"] = ""
+df["past_medical_history"] = ""
+df["vital_signs"] = ""
+df["exam_results"] = ""
+df["lab_results"] = ""
+df["full_HPI"] = ""
+df["discharge_plan"] = ""
 
-# Save results
+# 6. Process each context
+for idx, row in df.iterrows():
+    context_text = row["context"]
+
+    prompt = f"""
+You are a medical information extractor. 
+Extract the following from the given medical note:
+- Visit Reason
+- Diagnosis
+- Past Medical History
+- Vital Signs
+- Exam Results
+- Lab Results
+- Full HPI
+- Discharge Plan
+
+Return the result ONLY in JSON format like:
+{{
+  "visit_reason": "...",
+  "diagnosis": ["..."],
+  "past_medical_history": ["..."],
+  "vital_signs": ["..."],
+  "exam_results": ["..."],
+  "lab_results": ["..."],
+  "full_HPI": "...",
+  "discharge_plan": "..."
+}}
+
+Medical Note:
+\"\"\"{context_text}\"\"\"
+"""
+
+    result = generator(prompt)[0]["generated_text"]
+
+    try:
+        import json
+        # Try extracting only the JSON part
+        json_start = result.find("{")
+        json_end = result.rfind("}") + 1
+        json_str = result[json_start:json_end]
+        data = json.loads(json_str)
+
+        df.at[idx, "visit_reason"] = data.get("visit_reason", "")
+        df.at[idx, "diagnosis"] = ", ".join(data.get("diagnosis", [])) if isinstance(data.get("diagnosis", []), list) else data.get("diagnosis", "")
+        df.at[idx, "past_medical_history"] = ", ".join(data.get("past_medical_history", []))
+        df.at[idx, "vital_signs"] = ", ".join(data.get("vital_signs", []))
+        df.at[idx, "exam_results"] = ", ".join(data.get("exam_results", []))
+        df.at[idx, "lab_results"] = ", ".join(data.get("lab_results", []))
+        df.at[idx, "full_HPI"] = data.get("full_HPI", "")
+        df.at[idx, "discharge_plan"] = data.get("discharge_plan", "")
+    except Exception as e:
+        print(f"Error parsing row {idx}: {e}")
+        continue
+
+# 7. Save output
 df.to_csv("result_with_extractions.csv", index=False)
-
-print("✅ Prompt-based extraction complete. Saved to result_with_extractions.csv")
+print("Extraction completed → result_with_extractions.csv")
