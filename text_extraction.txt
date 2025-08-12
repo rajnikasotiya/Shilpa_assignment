@@ -3,33 +3,19 @@
 import pandas as pd
 import json
 import re
+import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
+from concurrent.futures import ProcessPoolExecutor
+import os
 
 # -------------------
 # CONFIG
 # -------------------
 model_name = "microsoft/Phi-2"
 output_col = model_name.replace("/", "_")  # => "microsoft_Phi_2"
-batch_size = 100
 max_new_tokens = 200
 temperature = 0.0
-
-# -------------------
-# LOAD MODEL & TOKENIZER
-# -------------------
-tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-model = AutoModelForCausalLM.from_pretrained(
-    model_name,
-    device_map="cpu",
-    torch_dtype="auto",
-    trust_remote_code=True
-)
-
-pipe = pipeline(
-    "text-generation",
-    model=model,
-    tokenizer=tokenizer
-)
+num_workers = os.cpu_count() // 2  # use half of available cores to avoid RAM pressure
 
 # -------------------
 # PROMPT TEMPLATE
@@ -53,15 +39,31 @@ Medical Note:
 """
 
 # -------------------
-# EXTRACTION FUNCTION (BATCH)
+# WORKER FUNCTION
 # -------------------
-def extract_medical_info_batch(texts):
-    results = []
-    for text in texts:
-        prompt = build_prompt(text)
-        resp = pipe(prompt, max_new_tokens=max_new_tokens, temperature=temperature, do_sample=False)[0]['generated_text']
+def process_chunk(df_chunk):
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        device_map="cpu",
+        torch_dtype=torch.float32,
+        trust_remote_code=True
+    )
 
-        # Extract JSON only
+    pipe = pipeline(
+        "text-generation",
+        model=model,
+        tokenizer=tokenizer,
+        device=-1,  # CPU
+        batch_size=4
+    )
+
+    prompts = [build_prompt(t) for t in df_chunk["context"].tolist()]
+    outputs = pipe(prompts, max_new_tokens=max_new_tokens, temperature=temperature, do_sample=False)
+
+    results = []
+    for out in outputs:
+        resp = out["generated_text"]
         match = re.search(r"\{.*\}", resp, re.DOTALL)
         if match:
             try:
@@ -72,26 +74,25 @@ def extract_medical_info_batch(texts):
             except json.JSONDecodeError:
                 pass
         results.append("")  # fallback if parsing fails
-    return results
+    df_chunk[output_col] = results
+    return df_chunk
 
 # -------------------
-# READ DATA
+# MAIN EXECUTION
 # -------------------
-df = pd.read_csv("result.csv")
+if __name__ == "__main__":
+    df = pd.read_csv("result.csv")
 
-# -------------------
-# PROCESS IN BATCHES
-# -------------------
-all_results = []
-for i in range(0, len(df), batch_size):
-    batch_texts = df["context"].iloc[i:i+batch_size].tolist()
-    batch_results = extract_medical_info_batch(batch_texts)
-    all_results.extend(batch_results)
+    # Split into chunks for parallel processing
+    chunks = []
+    chunk_size = len(df) // num_workers + 1
+    for i in range(0, len(df), chunk_size):
+        chunks.append(df.iloc[i:i+chunk_size].copy())
 
-df[output_col] = all_results
+    with ProcessPoolExecutor(max_workers=num_workers) as executor:
+        processed_chunks = list(executor.map(process_chunk, chunks))
 
-# -------------------
-# SAVE
-# -------------------
-df.to_csv("result_with_extractions.csv", index=False)
-print(f"✅ Extraction complete. Saved to result_with_extractions.csv with column '{output_col}'.")
+    final_df = pd.concat(processed_chunks, ignore_index=True)
+    final_df.to_csv("result_with_extractions.csv", index=False)
+
+    print(f"✅ Done! Saved to 'result_with_extractions.csv' with column '{output_col}'.")
