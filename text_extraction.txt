@@ -1,27 +1,33 @@
 import pandas as pd
-from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
-from concurrent.futures import ThreadPoolExecutor
+from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
+import torch
 import math
 
-# ====== CONFIG ======
+# ==== SETTINGS ====
+input_file = "results.csv"   # Your input file
+text_column = "context"      # Column containing input text
 model_name = "microsoft/Phi-2"
-num_workers = 4   # adjust for your CPU cores
-input_csv = "your_file.csv"
-output_csv = "output_with_phi2.csv"
+output_column = model_name.replace("/", "_")  # Column name for results
+batch_size = 10              # Process rows in batches
+max_length = 400             # Reduce output size for faster processing
 
-# ====== LOAD MODEL ======
+# ==== LOAD DATA ====
+df = pd.read_csv(input_file)
+
+# ==== LOAD MODEL/TOKENIZER (CPU) ====
 tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForCausalLM.from_pretrained(
-    model_name,
-    device_map="cpu",
-    torch_dtype="auto"
+model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float32)  # CPU mode
+pipe = pipeline(
+    "text-generation",
+    model=model,
+    tokenizer=tokenizer,
+    device=-1  # CPU only
 )
-pipe = pipeline("text-generation", model=model, tokenizer=tokenizer, device=-1)
 
-# ====== PROMPT FUNCTION (optimized) ======
-def extract_medical_info(text):
-    prompt = f"""
-    Extract from the medical note in JSON:
+# ==== DEFINE PROMPT ====
+def build_prompt(text):
+    return f"""
+    Extract the following from the medical note in JSON format:
     - visit_reason
     - diagnosis
     - past_medical_history
@@ -30,35 +36,26 @@ def extract_medical_info(text):
     - lab_results
     - full_HPI
     - discharge_plan
-
+    
     Medical Note:
     {text}
     """
-    try:
-        return pipe(prompt, max_length=512, truncation=True)[0]['generated_text']
-    except Exception as e:
-        return f"ERROR: {e}"
 
-# ====== PARALLEL PROCESSING ======
-def process_chunk(chunk_df):
-    chunk_df[model_name] = chunk_df['text'].apply(extract_medical_info)
-    return chunk_df
+# ==== PROCESS IN BATCHES ====
+results = []
+num_batches = math.ceil(len(df) / batch_size)
 
-# Read dataset
-df = pd.read_csv(input_csv)
+for i in range(num_batches):
+    batch_texts = df[text_column].iloc[i*batch_size:(i+1)*batch_size].tolist()
+    prompts = [build_prompt(t) for t in batch_texts]
+    outputs = pipe(prompts, max_length=max_length, truncation=True)
+    batch_results = [o[0]['generated_text'] for o in outputs]
+    results.extend(batch_results)
+    print(f"Processed batch {i+1}/{num_batches}")
 
-# Split into chunks for threads
-chunk_size = math.ceil(len(df) / num_workers)
-chunks = [df.iloc[i:i + chunk_size] for i in range(0, len(df), chunk_size)]
+# ==== ADD NEW COLUMN ====
+df[output_column] = results
 
-# Process in parallel with incremental saving
-processed_chunks = []
-with ThreadPoolExecutor(max_workers=num_workers) as executor:
-    for processed_chunk in executor.map(process_chunk, chunks):
-        processed_chunks.append(processed_chunk)
-        pd.concat(processed_chunks).to_csv(output_csv, index=False)
-
-# Final save
-final_df = pd.concat(processed_chunks).reset_index(drop=True)
-final_df.to_csv(output_csv, index=False)
-print(f"✅ Processing complete. Saved to {output_csv}")
+# ==== SAVE BACK TO SAME FILE ====
+df.to_csv(input_file, index=False)
+print(f"✅ Updated '{input_file}' with new column '{output_column}'")
