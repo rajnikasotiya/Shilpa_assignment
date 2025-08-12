@@ -1,98 +1,64 @@
-!pip install --upgrade transformers accelerate safetensors pandas --quiet
-
 import pandas as pd
-import json
-import re
-import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
-from concurrent.futures import ProcessPoolExecutor
-import os
+from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
+from concurrent.futures import ThreadPoolExecutor
+import math
 
-# -------------------
-# CONFIG
-# -------------------
+# ====== CONFIG ======
 model_name = "microsoft/Phi-2"
-output_col = model_name.replace("/", "_")  # => "microsoft_Phi_2"
-max_new_tokens = 200
-temperature = 0.0
-num_workers = os.cpu_count() // 2  # use half of available cores to avoid RAM pressure
+num_workers = 4   # adjust for your CPU cores
+input_csv = "your_file.csv"
+output_csv = "output_with_phi2.csv"
 
-# -------------------
-# PROMPT TEMPLATE
-# -------------------
-def build_prompt(text):
-    return f"""
-Extract the following from the medical note in valid JSON format:
-- visit_reason
-- diagnosis
-- past_medical_history
-- vital_signs
-- exam_results
-- lab_results
-- full_HPI
-- discharge_plan
+# ====== LOAD MODEL ======
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    device_map="cpu",
+    torch_dtype="auto"
+)
+pipe = pipeline("text-generation", model=model, tokenizer=tokenizer, device=-1)
 
-Return ONLY JSON, no extra text.
+# ====== PROMPT FUNCTION (optimized) ======
+def extract_medical_info(text):
+    prompt = f"""
+    Extract from the medical note in JSON:
+    - visit_reason
+    - diagnosis
+    - past_medical_history
+    - vital_signs
+    - exam_results
+    - lab_results
+    - full_HPI
+    - discharge_plan
 
-Medical Note:
-{text}
-"""
+    Medical Note:
+    {text}
+    """
+    try:
+        return pipe(prompt, max_length=512, truncation=True)[0]['generated_text']
+    except Exception as e:
+        return f"ERROR: {e}"
 
-# -------------------
-# WORKER FUNCTION
-# -------------------
-def process_chunk(df_chunk):
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        device_map="cpu",
-        torch_dtype=torch.float32,
-        trust_remote_code=True
-    )
+# ====== PARALLEL PROCESSING ======
+def process_chunk(chunk_df):
+    chunk_df[model_name] = chunk_df['text'].apply(extract_medical_info)
+    return chunk_df
 
-    pipe = pipeline(
-        "text-generation",
-        model=model,
-        tokenizer=tokenizer,
-        device=-1,  # CPU
-        batch_size=4
-    )
+# Read dataset
+df = pd.read_csv(input_csv)
 
-    prompts = [build_prompt(t) for t in df_chunk["context"].tolist()]
-    outputs = pipe(prompts, max_new_tokens=max_new_tokens, temperature=temperature, do_sample=False)
+# Split into chunks for threads
+chunk_size = math.ceil(len(df) / num_workers)
+chunks = [df.iloc[i:i + chunk_size] for i in range(0, len(df), chunk_size)]
 
-    results = []
-    for out in outputs:
-        resp = out["generated_text"]
-        match = re.search(r"\{.*\}", resp, re.DOTALL)
-        if match:
-            try:
-                parsed = json.loads(match.group(0))
-                combined = " | ".join([f"{k}: {v}" for k, v in parsed.items()])
-                results.append(combined)
-                continue
-            except json.JSONDecodeError:
-                pass
-        results.append("")  # fallback if parsing fails
-    df_chunk[output_col] = results
-    return df_chunk
+# Process in parallel with incremental saving
+processed_chunks = []
+with ThreadPoolExecutor(max_workers=num_workers) as executor:
+    for processed_chunk in executor.map(process_chunk, chunks):
+        processed_chunks.append(processed_chunk)
+        pd.concat(processed_chunks).to_csv(output_csv, index=False)
 
-# -------------------
-# MAIN EXECUTION
-# -------------------
-if __name__ == "__main__":
-    df = pd.read_csv("result.csv")
-
-    # Split into chunks for parallel processing
-    chunks = []
-    chunk_size = len(df) // num_workers + 1
-    for i in range(0, len(df), chunk_size):
-        chunks.append(df.iloc[i:i+chunk_size].copy())
-
-    with ProcessPoolExecutor(max_workers=num_workers) as executor:
-        processed_chunks = list(executor.map(process_chunk, chunks))
-
-    final_df = pd.concat(processed_chunks, ignore_index=True)
-    final_df.to_csv("result_with_extractions.csv", index=False)
-
-    print(f"✅ Done! Saved to 'result_with_extractions.csv' with column '{output_col}'.")
+# Final save
+final_df = pd.concat(processed_chunks).reset_index(drop=True)
+final_df.to_csv(output_csv, index=False)
+print(f"✅ Processing complete. Saved to {output_csv}")
