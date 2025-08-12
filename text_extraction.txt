@@ -1,92 +1,57 @@
+!pip install --upgrade transformers pandas
+
 import pandas as pd
 from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
 
-# 1. Model name - Falcon 7B Instruct
-model_name = "tiiuae/falcon-7b-instruct"
+model_name = "microsoft/Phi-3-mini-4k-instruct"
 
-# 2. Load tokenizer and model (CPU-friendly but can be slow without GPU)
-tokenizer = AutoTokenizer.from_pretrained(model_name)
+# Load tokenizer and model with trust_remote_code
+tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 model = AutoModelForCausalLM.from_pretrained(
     model_name,
-    torch_dtype="auto"  # lets HF decide precision
+    device_map="cpu",
+    torch_dtype="auto",
+    trust_remote_code=True
 )
 
-# 3. Create pipeline
 generator = pipeline(
     "text-generation",
     model=model,
     tokenizer=tokenizer,
-    max_new_tokens=512,
-    temperature=0.2
+    device=-1  # ensures CPU usage
 )
 
-# 4. Load CSV
 df = pd.read_csv("result.csv")
 
-# 5. Prepare new columns
-df["visit_reason"] = ""
-df["diagnosis"] = ""
-df["past_medical_history"] = ""
-df["vital_signs"] = ""
-df["exam_results"] = ""
-df["lab_results"] = ""
-df["full_HPI"] = ""
-df["discharge_plan"] = ""
-
-# 6. Process each context
-for idx, row in df.iterrows():
-    context_text = row["context"]
-
+def extract_medical_info(text):
     prompt = f"""
-You are a medical information extractor. 
-Extract the following from the given medical note:
-- Visit Reason
-- Diagnosis
-- Past Medical History
-- Vital Signs
-- Exam Results
-- Lab Results
-- Full HPI
-- Discharge Plan
+You are a medical information extractor. Please output a valid JSON with lists for each of:
+- visit_reason
+- diagnosis
+- past_medical_history
+- vital_signs
+- exam_results
+- lab_results
+- full_HPI
+- discharge_plan
 
-Return the result ONLY in JSON format like:
-{{
-  "visit_reason": "...",
-  "diagnosis": ["..."],
-  "past_medical_history": ["..."],
-  "vital_signs": ["..."],
-  "exam_results": ["..."],
-  "lab_results": ["..."],
-  "full_HPI": "...",
-  "discharge_plan": "..."
-}}
-
-Medical Note:
-\"\"\"{context_text}\"\"\"
+Note:
+{text}
 """
+    resp = generator(prompt, max_new_tokens=200, temperature=0.0, do_sample=False)[0]["generated_text"]
+    import json, re
+    match = re.search(r"\{.*\}", resp, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group(0))
+        except json.JSONDecodeError:
+            pass
+    return {k: [] for k in ["visit_reason","diagnosis","past_medical_history",
+                            "vital_signs","exam_results","lab_results",
+                            "full_HPI","discharge_plan"]}
 
-    result = generator(prompt)[0]["generated_text"]
-
-    try:
-        import json
-        # Try extracting only the JSON part
-        json_start = result.find("{")
-        json_end = result.rfind("}") + 1
-        json_str = result[json_start:json_end]
-        data = json.loads(json_str)
-
-        df.at[idx, "visit_reason"] = data.get("visit_reason", "")
-        df.at[idx, "diagnosis"] = ", ".join(data.get("diagnosis", [])) if isinstance(data.get("diagnosis", []), list) else data.get("diagnosis", "")
-        df.at[idx, "past_medical_history"] = ", ".join(data.get("past_medical_history", []))
-        df.at[idx, "vital_signs"] = ", ".join(data.get("vital_signs", []))
-        df.at[idx, "exam_results"] = ", ".join(data.get("exam_results", []))
-        df.at[idx, "lab_results"] = ", ".join(data.get("lab_results", []))
-        df.at[idx, "full_HPI"] = data.get("full_HPI", "")
-        df.at[idx, "discharge_plan"] = data.get("discharge_plan", "")
-    except Exception as e:
-        print(f"Error parsing row {idx}: {e}")
-        continue
-
-# 7. Save output
-df.to_csv("result_with_extractions.csv", index=False)
-print("Extraction completed → result_with_extractions.csv")
+results = df["context"].apply(extract_medical_info)
+results_df = pd.DataFrame(results.tolist())
+df_extracted = pd.concat([df, results_df], axis=1)
+df_extracted.to_csv("result_with_extractions.csv", index=False)
+print("Extraction complete. Saved to result_with_extractions.csv")
