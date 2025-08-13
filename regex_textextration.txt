@@ -1,0 +1,101 @@
+import pandas as pd
+import re
+from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipeline
+
+# -----------------------------
+# CONFIGURATION
+# -----------------------------
+INPUT_FILE = "results.csv"
+
+patterns = {
+    "Visit Reason": r"(?:Visit Reason|Reason for Visit):\s*(.+?)(?=\n[A-Z]|$)",
+    "Diagnosis": r"(?:Diagnosis|Impressions):\s*(.+?)(?=\n[A-Z]|$)",
+    "Past Medical History": r"(?:Past Medical History|PMH):\s*(.+?)(?=\n[A-Z]|$)",
+    "Clinical Details": r"(?:Clinical Details|Oral Phase|Pharyngeal Phase|Swallowing):\s*(.+?)(?=\n[A-Z]|$)",
+    "Vital Signs": r"(?:Vital Signs):\s*(.+?)(?=\n[A-Z]|$)",
+    "Exam Results": r"(?:Exam Results|Oral-Peripheral Examination):\s*(.+?)(?=\n[A-Z]|$)",
+    "Lab Results": r"(?:Lab Results):\s*(.+?)(?=\n[A-Z]|$)",
+    "Imaging Test Results": r"(?:Imaging Test Results):\s*(.+?)(?=\n[A-Z]|$)",
+    "Hospital and ED course": r"(?:Hospital and ED course):\s*(.+?)(?=\n[A-Z]|$)",
+    "Discharge Plan": r"(?:Discharge Plan):\s*(.+?)(?=\n[A-Z]|$)",
+    "Full HPI": r"(?:Full HPI):\s*(.+?)(?=\n[A-Z]|$)",
+    "Full Assessment and Plan": r"(?:Full Assessment and Plan|Plan):\s*(.+?)(?=\n[A-Z]|$)",
+}
+
+# -----------------------------
+# Load Hugging Face model
+# -----------------------------
+MODEL_NAME = "emilyalsentzer/Bio_ClinicalBERT"  # medical domain model
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+model = AutoModelForSequenceClassification.from_pretrained(
+    MODEL_NAME,
+    num_labels=len(patterns)
+)
+clf_pipeline = pipeline(
+    "text-classification",
+    model=model,
+    tokenizer=tokenizer,
+    truncation=True,
+    max_length=512
+)
+
+# Map index to category
+categories = list(patterns.keys())
+
+# -----------------------------
+# Extraction functions
+# -----------------------------
+def extract_with_regex(text):
+    extracted = {}
+    for field, pattern in patterns.items():
+        match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
+        if match:
+            lines = [line.strip() for line in match.group(1).split("\n") if line.strip()]
+            extracted[field] = lines if lines else []
+        else:
+            extracted[field] = []
+    return extracted
+
+def extract_with_hf_model(text):
+    extracted = {k: [] for k in patterns.keys()}
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
+    for line in lines:
+        pred = clf_pipeline(line, top_k=1)[0]
+        predicted_label = categories[int(pred['label'].split("_")[-1])] if "label" in pred['label'] else categories[0]
+        extracted[predicted_label].append(line)
+    return extracted
+
+# -----------------------------
+# MAIN SCRIPT
+# -----------------------------
+df = pd.read_csv(INPUT_FILE)
+
+structured_data = []
+model_used_list = []
+
+for _, row in df.iterrows():
+    text = str(row.get("context", "")).strip()
+    if not text:
+        structured_data.append({k: [] for k in patterns.keys()})
+        model_used_list.append("None")
+        continue
+
+    extracted = extract_with_regex(text)
+    non_empty_fields = sum(1 for v in extracted.values() if v)
+
+    if non_empty_fields < 3:
+        extracted = extract_with_hf_model(text)
+        model_used_list.append(MODEL_NAME)
+    else:
+        model_used_list.append("Regex")
+
+    structured_data.append(extracted)
+
+# Add results as new columns
+for field in patterns.keys():
+    df[field] = [d[field] for d in structured_data]
+df["model_used"] = model_used_list
+
+# Save back to same CSV
+df.to_csv(INPUT_FILE, index=False)
+print(f"Extraction completed. Updated file saved to {INPUT_FILE}")
