@@ -1,6 +1,7 @@
 import pandas as pd
 import json
 from transformers import pipeline
+from tqdm import tqdm
 
 # === Step 1: Load CSV ===
 file_path = "results.csv"  # change to your file name
@@ -18,7 +19,6 @@ generator = pipeline(
 # === Step 3: Function to extract structured JSON in your format ===
 def extract_info(text):
     # Pre-truncate if text too long (approx 480 tokens worth of chars)
-    # This avoids exceeding context limit but keeps most info
     max_chars = 1500
     if len(text) > max_chars:
         text = text[:max_chars]
@@ -46,23 +46,21 @@ def extract_info(text):
 
     output = generator(prompt, max_new_tokens=400)[0]['generated_text']
 
-    # Try to extract JSON part cleanly
     try:
         json_start = output.find("{")
         json_end = output.rfind("}") + 1
         if json_start != -1 and json_end != -1:
             parsed = json.loads(output[json_start:json_end])
-            # Pretty print with indentation but keep arrays inline
             return json.dumps(parsed, ensure_ascii=False)
         else:
             return output
     except:
-        return output  # fallback to raw output
+        return output
 
-# === Step 4: Apply to the "context" column ===
-df["microsoft/phi-2"] = df["context"].apply(extract_info)
+# === Step 4: Apply with progress bar ===
+tqdm.pandas(desc="Processing Notes with Phi-2")
+df["microsoft/phi-2"] = df["context"].progress_apply(extract_info)
 
 # === Step 5: Save back to same file ===
 df.to_csv(file_path, index=False)
-
-print(f"Processing complete. Updated file saved: {file_path}")
+print(f"✅ Processing complete. Updated file saved: {file_path}")
