@@ -1,101 +1,65 @@
 import pandas as pd
+import json
 import re
-from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipeline
 
-# -----------------------------
-# CONFIGURATION
-# -----------------------------
-INPUT_FILE = "results.csv"
+# Categories to extract
+CATEGORIES = [
+    "Visit Reason",
+    "Diagnosis",
+    "Past Medical History",
+    "Clinical Details",
+    "Vital Signs",
+    "Exam Results",
+    "Lab Results",
+    "Imaging Test Results",
+    "Hospital and ED course",
+    "Discharge Plan",
+    "Full HPI",
+    "Full Assessment and Plan"
+]
 
-patterns = {
-    "Visit Reason": r"(?:Visit Reason|Reason for Visit):\s*(.+?)(?=\n[A-Z]|$)",
-    "Diagnosis": r"(?:Diagnosis|Impressions):\s*(.+?)(?=\n[A-Z]|$)",
-    "Past Medical History": r"(?:Past Medical History|PMH):\s*(.+?)(?=\n[A-Z]|$)",
-    "Clinical Details": r"(?:Clinical Details|Oral Phase|Pharyngeal Phase|Swallowing):\s*(.+?)(?=\n[A-Z]|$)",
-    "Vital Signs": r"(?:Vital Signs):\s*(.+?)(?=\n[A-Z]|$)",
-    "Exam Results": r"(?:Exam Results|Oral-Peripheral Examination):\s*(.+?)(?=\n[A-Z]|$)",
-    "Lab Results": r"(?:Lab Results):\s*(.+?)(?=\n[A-Z]|$)",
-    "Imaging Test Results": r"(?:Imaging Test Results):\s*(.+?)(?=\n[A-Z]|$)",
-    "Hospital and ED course": r"(?:Hospital and ED course):\s*(.+?)(?=\n[A-Z]|$)",
-    "Discharge Plan": r"(?:Discharge Plan):\s*(.+?)(?=\n[A-Z]|$)",
-    "Full HPI": r"(?:Full HPI):\s*(.+?)(?=\n[A-Z]|$)",
-    "Full Assessment and Plan": r"(?:Full Assessment and Plan|Plan):\s*(.+?)(?=\n[A-Z]|$)",
-}
+# Function to extract medical info from context
+def extract_info(text):
+    text = str(text).strip()
+    extracted = {cat: "" if cat != "Diagnosis" else [] for cat in CATEGORIES}
 
-# -----------------------------
-# Load Hugging Face model
-# -----------------------------
-MODEL_NAME = "emilyalsentzer/Bio_ClinicalBERT"  # medical domain model
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-model = AutoModelForSequenceClassification.from_pretrained(
-    MODEL_NAME,
-    num_labels=len(patterns)
-)
-clf_pipeline = pipeline(
-    "text-classification",
-    model=model,
-    tokenizer=tokenizer,
-    truncation=True,
-    max_length=512
-)
+    # Pattern: Category followed by colon or dash, then capture text until next category or end
+    pattern = r"(?P<cat>{cats})[:\-]\s*(?P<val>.*?)(?=\n\s*(?:{cats})[:\-]|\Z)".format(
+        cats="|".join([re.escape(cat) for cat in CATEGORIES])
+    )
 
-# Map index to category
-categories = list(patterns.keys())
+    matches = re.finditer(pattern, text, re.IGNORECASE | re.DOTALL)
 
-# -----------------------------
-# Extraction functions
-# -----------------------------
-def extract_with_regex(text):
-    extracted = {}
-    for field, pattern in patterns.items():
-        match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
-        if match:
-            lines = [line.strip() for line in match.group(1).split("\n") if line.strip()]
-            extracted[field] = lines if lines else []
+    for match in matches:
+        cat = match.group("cat").strip()
+        val = match.group("val").strip()
+        if cat.lower() == "diagnosis":
+            extracted["Diagnosis"] = [d.strip() for d in re.split(r",|\n", val) if d.strip()]
         else:
-            extracted[field] = []
-    return extracted
+            extracted[cat] = val
 
-def extract_with_hf_model(text):
-    extracted = {k: [] for k in patterns.keys()}
-    lines = [line.strip() for line in text.split("\n") if line.strip()]
-    for line in lines:
-        pred = clf_pipeline(line, top_k=1)[0]
-        predicted_label = categories[int(pred['label'].split("_")[-1])] if "label" in pred['label'] else categories[0]
-        extracted[predicted_label].append(line)
-    return extracted
+    return json.dumps(extracted, ensure_ascii=False)
 
-# -----------------------------
-# MAIN SCRIPT
-# -----------------------------
-df = pd.read_csv(INPUT_FILE)
+# Read CSV
+df = pd.read_csv("results.csv")
 
-structured_data = []
-model_used_list = []
+# Ensure required columns exist
+if "context" not in df.columns or "model_used" not in df.columns:
+    raise ValueError("CSV must contain 'context' and 'model_used' columns")
 
-for _, row in df.iterrows():
-    text = str(row.get("context", "")).strip()
-    if not text:
-        structured_data.append({k: [] for k in patterns.keys()})
-        model_used_list.append("None")
-        continue
+# Process per model
+model_dfs = []
+for model_name, group in df.groupby("model_used"):
+    model_output = group["context"].apply(extract_info)
+    temp_df = pd.DataFrame({model_name: model_output})
+    temp_df.index = group.index
+    model_dfs.append(temp_df)
 
-    extracted = extract_with_regex(text)
-    non_empty_fields = sum(1 for v in extracted.values() if v)
+# Combine all model outputs
+final_df = pd.concat(model_dfs, axis=1)
 
-    if non_empty_fields < 3:
-        extracted = extract_with_hf_model(text)
-        model_used_list.append(MODEL_NAME)
-    else:
-        model_used_list.append("Regex")
+# Save
+final_df.to_csv("formatted_output.csv", index=False)
 
-    structured_data.append(extracted)
-
-# Add results as new columns
-for field in patterns.keys():
-    df[field] = [d[field] for d in structured_data]
-df["model_used"] = model_used_list
-
-# Save back to same CSV
-df.to_csv(INPUT_FILE, index=False)
-print(f"Extraction completed. Updated file saved to {INPUT_FILE}")
+print("✅ Done! Saved to formatted_output.csv")
+print(final_df.head())
