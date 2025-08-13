@@ -12,41 +12,57 @@ generator = pipeline(
     model="microsoft/phi-2",
     torch_dtype="auto",
     device_map="auto",
-    max_new_tokens=300,  # limit output length
     do_sample=False
 )
 
-# === Step 3: Function to extract structured JSON ===
+# === Step 3: Function to extract structured JSON in your format ===
 def extract_info(text):
+    # Pre-truncate if text too long (approx 480 tokens worth of chars)
+    # This avoids exceeding context limit but keeps most info
+    max_chars = 1500
+    if len(text) > max_chars:
+        text = text[:max_chars]
+
     prompt = (
-        "Extract the following structured information from the medical text:\n"
-        "Visit Reason, Diagnosis, Past Medical History, Clinical Details, Vital Signs, "
-        "Exam Results, Lab Results, Imaging Test Results, Hospital and ED course, "
-        "Discharge Plan, Full HPI, Full Assessment and Plan.\n"
-        "Return output strictly as JSON with keys exactly as mentioned, "
-        "and arrays formatted with each string in a new line.\n\n"
+        "From the following medical text, extract and format ONLY as JSON with this exact structure:\n"
+        '{ "Visit Reason": [], '
+        '"Diagnosis": [], '
+        '"Past Medical History": [], '
+        '"Clinical Details": [], '
+        '"Vital Signs": [], '
+        '"Exam Results": [], '
+        '"Lab Results": [], '
+        '"Imaging Test Results": [], '
+        '"Hospital and ED course": [], '
+        '"Discharge Plan": [], '
+        '"Full HPI": [], '
+        '"Full Assessment and Plan": [] }\n\n'
+        "Fill each array with strings extracted from the text where applicable. "
+        "If no data for a field, leave as empty array [].\n"
+        "Do NOT add any explanation text, only return valid JSON.\n\n"
         f"Text: {text}\n"
         "JSON:"
     )
-    
-    output = generator(prompt, max_new_tokens=300)[0]['generated_text']
-    
-    # Try to parse JSON and pretty print like your screenshot
+
+    output = generator(prompt, max_new_tokens=400)[0]['generated_text']
+
+    # Try to extract JSON part cleanly
     try:
         json_start = output.find("{")
         json_end = output.rfind("}") + 1
         if json_start != -1 and json_end != -1:
             parsed = json.loads(output[json_start:json_end])
-            return json.dumps(parsed, indent=4, ensure_ascii=False)
+            # Pretty print with indentation but keep arrays inline
+            return json.dumps(parsed, ensure_ascii=False)
         else:
             return output
     except:
-        return output  # if not valid JSON, return raw output
+        return output  # fallback to raw output
 
 # === Step 4: Apply to the "context" column ===
 df["microsoft/phi-2"] = df["context"].apply(extract_info)
 
-# === Step 5: Save to same file ===
+# === Step 5: Save back to same file ===
 df.to_csv(file_path, index=False)
 
-print(f"Processing complete. Output saved in: {file_path}")
+print(f"Processing complete. Updated file saved: {file_path}")
