@@ -1,0 +1,58 @@
+import pandas as pd
+from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
+from tqdm import tqdm
+
+# ==== Config ====
+input_file = "results.csv"  # your input CSV
+model_name = "microsoft/Phi-2"
+batch_size = 20  # adjust based on speed
+
+# ==== Load data ====
+df = pd.read_csv(input_file)
+
+# ==== Load model & tokenizer ====
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForCausalLM.from_pretrained(model_name)
+pipe = pipeline("text-generation", model=model, tokenizer=tokenizer, device_map="auto", max_length=512)
+
+# ==== Prompt template ====
+def build_prompt(text):
+    return f"""
+You are a medical information extraction assistant.
+From the following medical note, extract ONLY the following fields in JSON format:
+- Visit Reason
+- Diagnosis
+- Past Medical History
+- Clinical Details
+- Vital Signs
+- Exam Results
+- Lab Results
+- Imaging Test Results
+- Hospital and ED course
+- Discharge Plan
+- Full HPI
+- Full Assessment and Plan
+
+Make sure:
+1. Output is strictly valid JSON.
+2. Each field value is a list of strings (even if empty).
+3. Do not include any extra commentary or explanation.
+
+Medical Note:
+{text}
+"""
+
+# ==== Batch processing ====
+results = []
+for i in tqdm(range(0, len(df), batch_size), desc="Processing batches"):
+    batch_texts = df['context'].iloc[i:i+batch_size].tolist()
+    prompts = [build_prompt(txt) for txt in batch_texts]
+    outputs = pipe(prompts)
+    batch_results = [out[0]['generated_text'] for out in outputs]
+    results.extend(batch_results)
+
+# ==== Save results ====
+df[model_name] = results
+df.to_csv(input_file, index=False)
+
+print(f"✅ Processing complete. Results saved in '{input_file}' with column '{model_name}'.")
