@@ -23,7 +23,7 @@ def extract_info(text):
     text = str(text).strip()
     extracted = {cat: "" if cat != "Diagnosis" else [] for cat in CATEGORIES}
 
-    # Pattern: Category followed by colon or dash, then capture text until next category or end
+    # Regex: Category followed by colon or dash, capture until next category or end
     pattern = r"(?P<cat>{cats})[:\-]\s*(?P<val>.*?)(?=\n\s*(?:{cats})[:\-]|\Z)".format(
         cats="|".join([re.escape(cat) for cat in CATEGORIES])
     )
@@ -40,26 +40,19 @@ def extract_info(text):
 
     return json.dumps(extracted, ensure_ascii=False)
 
-# Read CSV
+# Load the input CSV
 df = pd.read_csv("results.csv")
 
-# Ensure required columns exist
+# Ensure columns exist
 if "context" not in df.columns or "model_used" not in df.columns:
     raise ValueError("CSV must contain 'context' and 'model_used' columns")
 
-# Process per model
-model_dfs = []
-for model_name, group in df.groupby("model_used"):
-    model_output = group["context"].apply(extract_info)
-    temp_df = pd.DataFrame({model_name: model_output})
-    temp_df.index = group.index
-    model_dfs.append(temp_df)
+# Process each row: add new column with model name
+for model_name in df["model_used"].unique():
+    mask = df["model_used"] == model_name
+    df.loc[mask, model_name] = df.loc[mask, "context"].apply(extract_info)
 
-# Combine all model outputs
-final_df = pd.concat(model_dfs, axis=1)
+# Save updated CSV
+df.to_csv("results_with_model_column.csv", index=False)
 
-# Save
-final_df.to_csv("formatted_output.csv", index=False)
-
-print("✅ Done! Saved to formatted_output.csv")
-print(final_df.head())
+print("✅ Done! File saved as results_with_model_column.csv")
