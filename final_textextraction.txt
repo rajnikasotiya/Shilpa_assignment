@@ -6,12 +6,14 @@ from transformers import pipeline
 file_path = "results.csv"  # change to your file name
 df = pd.read_csv(file_path)
 
-# === Step 2: Load summarization pipeline ===
-summarizer = pipeline(
-    "text2text-generation",
+# === Step 2: Load Phi-2 as text-generation pipeline ===
+generator = pipeline(
+    "text-generation",
     model="microsoft/phi-2",
-    max_length=512,
-    truncation=True
+    torch_dtype="auto",
+    device_map="auto",
+    max_new_tokens=300,  # limit output length
+    do_sample=False
 )
 
 # === Step 3: Function to extract structured JSON ===
@@ -23,15 +25,21 @@ def extract_info(text):
         "Discharge Plan, Full HPI, Full Assessment and Plan.\n"
         "Return output strictly as JSON with keys exactly as mentioned, "
         "and arrays formatted with each string in a new line.\n\n"
-        f"Text: {text}"
+        f"Text: {text}\n"
+        "JSON:"
     )
     
-    output = summarizer(prompt, do_sample=False)[0]['generated_text']
+    output = generator(prompt, max_new_tokens=300)[0]['generated_text']
     
     # Try to parse JSON and pretty print like your screenshot
     try:
-        parsed = json.loads(output)
-        return json.dumps(parsed, indent=4, ensure_ascii=False)  # keeps indentation
+        json_start = output.find("{")
+        json_end = output.rfind("}") + 1
+        if json_start != -1 and json_end != -1:
+            parsed = json.loads(output[json_start:json_end])
+            return json.dumps(parsed, indent=4, ensure_ascii=False)
+        else:
+            return output
     except:
         return output  # if not valid JSON, return raw output
 
