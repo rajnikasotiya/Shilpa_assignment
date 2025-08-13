@@ -1,58 +1,118 @@
-import pandas as pd
-import json
-import re
+"""
+Semantic Information Extraction using DistilBERT
+-------------------------------------------------
+This script:
+1. Reads a CSV file containing a 'context' column with medical text.
+2. Splits the text into smaller sentences.
+3. Uses DistilBERT to compute embeddings (numerical representations) for:
+   - Predefined section names (schema)
+   - Sentences in the context text
+4. Matches each sentence to the section it is most related to using cosine similarity.
+5. Stores the structured JSON output in a new column (model name as column).
+"""
 
-# Categories to extract
-CATEGORIES = [
-    "Visit Reason",
-    "Diagnosis",
-    "Past Medical History",
-    "Clinical Details",
-    "Vital Signs",
-    "Exam Results",
-    "Lab Results",
-    "Imaging Test Results",
-    "Hospital and ED course",
-    "Discharge Plan",
-    "Full HPI",
+import pandas as pd
+import re
+import json
+import torch
+from transformers import DistilBertTokenizer, DistilBertModel
+from sklearn.metrics.pairwise import cosine_similarity
+
+# -------------------------------
+# Step 1: Load your dataset
+# -------------------------------
+# Replace with your CSV file path
+df = pd.read_csv("your_file.csv")
+
+# Ensure the column exists
+if "context" not in df.columns:
+    raise ValueError("❌ 'context' column not found in the CSV file.")
+
+# Clean the text: convert to string and remove extra spaces
+df["context"] = df["context"].astype(str).str.strip()
+
+# -------------------------------
+# Step 2: Load DistilBERT model and tokenizer
+# -------------------------------
+print("🔄 Loading DistilBERT model...")
+tokenizer = DistilBertTokenizer.from_pretrained("distilbert-base-uncased")
+model = DistilBertModel.from_pretrained("distilbert-base-uncased")
+
+# -------------------------------
+# Step 3: Define target schema (sections we want to extract)
+# -------------------------------
+schema_sections = [
+    "Visit Reason", "Diagnosis", "Past Medical History", "Clinical Details",
+    "Vital Signs", "Exam Results", "Lab Results", "Imaging Test Results",
+    "Hospital and ED course", "Discharge Plan", "Full HPI",
     "Full Assessment and Plan"
 ]
 
-# Function to extract medical info from context
-def extract_info(text):
-    text = str(text).strip()
-    extracted = {cat: "" if cat != "Diagnosis" else [] for cat in CATEGORIES}
+# -------------------------------
+# Step 4: Function to get embeddings from DistilBERT
+# -------------------------------
+def get_embedding(text: str):
+    """
+    Convert text into a fixed-size numerical vector using DistilBERT.
+    We take the mean of all token embeddings to represent the sentence.
+    """
+    inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
+    with torch.no_grad():  # Disable gradient calculation for faster inference
+        outputs = model(**inputs)
+    # Average the token embeddings to get a single vector for the sentence
+    return outputs.last_hidden_state.mean(dim=1).numpy()
 
-    # Regex: Category followed by colon or dash, capture until next category or end
-    pattern = r"(?P<cat>{cats})[:\-]\s*(?P<val>.*?)(?=\n\s*(?:{cats})[:\-]|\Z)".format(
-        cats="|".join([re.escape(cat) for cat in CATEGORIES])
-    )
+# -------------------------------
+# Step 5: Precompute embeddings for all schema sections
+# -------------------------------
+print("🔄 Creating embeddings for schema sections...")
+schema_embeddings = {section: get_embedding(section) for section in schema_sections}
 
-    matches = re.finditer(pattern, text, re.IGNORECASE | re.DOTALL)
+# -------------------------------
+# Step 6: Function to extract structured info from free text
+# -------------------------------
+def extract_sections(text: str):
+    """
+    Splits text into sentences and assigns each to the schema section
+    with the highest semantic similarity.
+    Returns the result as a JSON string.
+    """
+    # Create an empty result dictionary
+    result = {section: "" for section in schema_sections}
+    
+    # Split the text into sentences using regex
+    sentences = re.split(r'(?<=[.?!])\s+', text)
+    
+    # Process each sentence
+    for sentence in sentences:
+        if not sentence.strip():
+            continue  # Skip empty sentences
+        
+        # Get embedding for this sentence
+        sentence_emb = get_embedding(sentence)
+        
+        # Compute similarity with each schema section
+        similarities = {
+            section: cosine_similarity(sentence_emb, schema_embeddings[section])[0][0]
+            for section in schema_sections
+        }
+        
+        # Assign sentence to the section with the highest similarity score
+        best_section = max(similarities, key=similarities.get)
+        result[best_section] += sentence.strip() + " "
+    
+    # Convert dictionary to JSON string
+    return json.dumps(result, ensure_ascii=False)
 
-    for match in matches:
-        cat = match.group("cat").strip()
-        val = match.group("val").strip()
-        if cat.lower() == "diagnosis":
-            extracted["Diagnosis"] = [d.strip() for d in re.split(r",|\n", val) if d.strip()]
-        else:
-            extracted[cat] = val
+# -------------------------------
+# Step 7: Apply extraction to each row in the DataFrame
+# -------------------------------
+print("🔄 Extracting information from each context...")
+df["DistilBERT"] = df["context"].apply(extract_sections)
 
-    return json.dumps(extracted, ensure_ascii=False)
-
-# Load the input CSV
-df = pd.read_csv("results.csv")
-
-# Ensure columns exist
-if "context" not in df.columns or "model_used" not in df.columns:
-    raise ValueError("CSV must contain 'context' and 'model_used' columns")
-
-# Process each row: add new column with model name
-for model_name in df["model_used"].unique():
-    mask = df["model_used"] == model_name
-    df.loc[mask, model_name] = df.loc[mask, "context"].apply(extract_info)
-
-# Save updated CSV
-df.to_csv("results_with_model_column.csv", index=False)
-
-print("✅ Done! File saved as results_with_model_column.csv")
+# -------------------------------
+# Step 8: Save the results
+# -------------------------------
+output_file = "structured_results_with_DistilBERT.csv"
+df.to_csv(output_file, index=False)
+print(f"✅ Extraction complete. Results saved to '{output_file}'.")
