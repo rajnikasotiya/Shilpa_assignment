@@ -1,58 +1,44 @@
 import pandas as pd
-from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
-from tqdm import tqdm
+import json
+from transformers import pipeline
 
-# ==== Config ====
-input_file = "results.csv"  # your input CSV
-model_name = "microsoft/Phi-2"
-batch_size = 20  # adjust based on speed
+# === Step 1: Load CSV ===
+file_path = "results.csv"  # change to your file name
+df = pd.read_csv(file_path)
 
-# ==== Load data ====
-df = pd.read_csv(input_file)
+# === Step 2: Load summarization pipeline ===
+summarizer = pipeline(
+    "text2text-generation",
+    model="microsoft/phi-2",
+    max_length=512,
+    truncation=True
+)
 
-# ==== Load model & tokenizer ====
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForCausalLM.from_pretrained(model_name)
-pipe = pipeline("text-generation", model=model, tokenizer=tokenizer, device_map="auto", max_length=512)
+# === Step 3: Function to extract structured JSON ===
+def extract_info(text):
+    prompt = (
+        "Extract the following structured information from the medical text:\n"
+        "Visit Reason, Diagnosis, Past Medical History, Clinical Details, Vital Signs, "
+        "Exam Results, Lab Results, Imaging Test Results, Hospital and ED course, "
+        "Discharge Plan, Full HPI, Full Assessment and Plan.\n"
+        "Return output strictly as JSON with keys exactly as mentioned, "
+        "and arrays formatted with each string in a new line.\n\n"
+        f"Text: {text}"
+    )
+    
+    output = summarizer(prompt, do_sample=False)[0]['generated_text']
+    
+    # Try to parse JSON and pretty print like your screenshot
+    try:
+        parsed = json.loads(output)
+        return json.dumps(parsed, indent=4, ensure_ascii=False)  # keeps indentation
+    except:
+        return output  # if not valid JSON, return raw output
 
-# ==== Prompt template ====
-def build_prompt(text):
-    return f"""
-You are a medical information extraction assistant.
-From the following medical note, extract ONLY the following fields in JSON format:
-- Visit Reason
-- Diagnosis
-- Past Medical History
-- Clinical Details
-- Vital Signs
-- Exam Results
-- Lab Results
-- Imaging Test Results
-- Hospital and ED course
-- Discharge Plan
-- Full HPI
-- Full Assessment and Plan
+# === Step 4: Apply to the "context" column ===
+df["microsoft/phi-2"] = df["context"].apply(extract_info)
 
-Make sure:
-1. Output is strictly valid JSON.
-2. Each field value is a list of strings (even if empty).
-3. Do not include any extra commentary or explanation.
+# === Step 5: Save to same file ===
+df.to_csv(file_path, index=False)
 
-Medical Note:
-{text}
-"""
-
-# ==== Batch processing ====
-results = []
-for i in tqdm(range(0, len(df), batch_size), desc="Processing batches"):
-    batch_texts = df['context'].iloc[i:i+batch_size].tolist()
-    prompts = [build_prompt(txt) for txt in batch_texts]
-    outputs = pipe(prompts)
-    batch_results = [out[0]['generated_text'] for out in outputs]
-    results.extend(batch_results)
-
-# ==== Save results ====
-df[model_name] = results
-df.to_csv(input_file, index=False)
-
-print(f"✅ Processing complete. Results saved in '{input_file}' with column '{model_name}'.")
+print(f"Processing complete. Output saved in: {file_path}")
