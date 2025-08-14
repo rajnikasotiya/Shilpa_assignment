@@ -27,13 +27,10 @@ CATEGORIES = list(CATEGORY_ALIASES.keys())
 # === Load embedding model ===
 embedder = SentenceTransformer("all-MiniLM-L6-v2")
 
-
-def extract_with_best_similarity(text, threshold=0.65, top_k=3, extra_sentences=2):
+def extract_with_best_similarity(text, threshold=0.65, top_k=3):
     """
     Extract info for each category with heading match (fuzzy via aliases) 
     and fallback to top-N cosine similarity matches.
-    Also appends a few sentences after heading matches for more context,
-    but stops if another category heading is encountered.
     """
     text = str(text).strip()
     result = {cat: [] for cat in CATEGORIES}
@@ -49,20 +46,12 @@ def extract_with_best_similarity(text, threshold=0.65, top_k=3, extra_sentences=
                 value = match.group(1).strip()
                 if value:
                     extracted = [v.strip() for v in value.split("\n") if v.strip()]
-                    
-                    # === Add extra sentences after heading block ===
-                    end_pos = match.end(1)
-                    remaining_text = text[end_pos:].strip()
-                    
-                    stop_pattern = rf"(?i)^\s*({'|'.join(re.escape(a) for aliases in CATEGORY_ALIASES.values() for a in aliases)})\s*[:\-]"
-                    remaining_text = re.split(stop_pattern, remaining_text, maxsplit=1)[0]
-                    
-                    extra_sent_list = re.split(r'(?<=[.!?])\s+', remaining_text)
-                    extra_sent_list = [s.strip() for s in extra_sent_list if s.strip()]
-                    if extra_sent_list:
-                        extracted.extend(extra_sent_list[:extra_sentences])
-                    # =================================================
-                    
+                    # Add extra sentence if available
+                    lines = text.split("\n")
+                    for i, line in enumerate(lines):
+                        if alias.lower() in line.lower() and i + 1 < len(lines):
+                            extracted.append(lines[i + 1].strip())
+                            break
                     result[cat] = extracted
                     similarity_scores[cat] = 1.0
                     found_match = True
@@ -70,86 +59,98 @@ def extract_with_best_similarity(text, threshold=0.65, top_k=3, extra_sentences=
         if found_match:
             continue
     
-    # === Fallback: cosine similarity (top-N sentences) ===
+    # === Fallback: cosine similarity (top-N paragraphs) ===
     paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
     if paragraphs:
         para_embeddings = embedder.encode(paragraphs, convert_to_tensor=True)
         
         for cat in CATEGORIES:
-            if not result[cat]:
+            if not result[cat]:  # no heading match
                 cat_embedding = embedder.encode(cat, convert_to_tensor=True)
                 cosine_scores = util.cos_sim(cat_embedding, para_embeddings)[0]
                 
                 top_indices = np.argsort(cosine_scores.cpu().numpy())[::-1][:top_k]
                 top_matches = [
-                    paragraphs[idx] for idx in top_indices 
-                    if cosine_scores[idx] >= threshold
+                    paragraphs[idx]
+                    for idx in top_indices
+                    if float(cosine_scores[idx]) >= threshold
                 ]
                 
                 if top_matches:
                     result[cat] = top_matches
-                    similarity_scores[cat] = float(max(cosine_scores[idx] for idx in top_indices))
+                    similarity_scores[cat] = max(float(cosine_scores[idx]) for idx in top_indices)
     
     return result, similarity_scores
 
-
-def cosine_similarity_between_columns(source_text, target_text, threshold=0.65, top_k=3):
+def cosine_similarity_between_columns(context_text, compare_text, threshold=0.65, top_k=3):
     """
-    Calculate cosine similarity of each category in source_text 
-    against all paragraphs in target_text.
+    Compute cosine similarity between context column text and compare_text (like GPT-4 output).
     """
-    target_paragraphs = [p.strip() for p in str(target_text).split("\n") if p.strip()]
-    target_embeddings = embedder.encode(target_paragraphs, convert_to_tensor=True) if target_paragraphs else None
+    context_text = str(context_text).strip()
+    compare_text = str(compare_text).strip()
     
+    result = {cat: [] for cat in CATEGORIES}
     scores = {cat: 0.0 for cat in CATEGORIES}
     
-    if not target_embeddings:
-        return scores
+    if not compare_text:
+        return result, scores
+    
+    context_paragraphs = [p.strip() for p in context_text.split("\n") if p.strip()]
+    compare_paragraphs = [p.strip() for p in compare_text.split("\n") if p.strip()]
+    
+    if not context_paragraphs or not compare_paragraphs:
+        return result, scores
+    
+    context_embeddings = embedder.encode(context_paragraphs, convert_to_tensor=True)
+    compare_embeddings = embedder.encode(compare_paragraphs, convert_to_tensor=True)
     
     for cat in CATEGORIES:
         cat_embedding = embedder.encode(cat, convert_to_tensor=True)
-        cosine_scores = util.cos_sim(cat_embedding, target_embeddings)[0]
+        cosine_scores = util.cos_sim(cat_embedding, compare_embeddings)[0]
         
         top_indices = np.argsort(cosine_scores.cpu().numpy())[::-1][:top_k]
-        valid_scores = [cosine_scores[idx] for idx in top_indices if cosine_scores[idx] >= threshold]
+        top_matches = [
+            compare_paragraphs[idx]
+            for idx in top_indices
+            if float(cosine_scores[idx]) >= threshold
+        ]
         
-        if valid_scores:
-            scores[cat] = float(max(valid_scores))
+        if top_matches:
+            result[cat] = top_matches
+            scores[cat] = max(float(cosine_scores[idx]) for idx in top_indices)
     
-    return scores
+    return result, scores
 
-
-# === Apply extraction for "context" column ===
+# === Apply extraction for context column ===
 MODEL_NAME = "distilbert-base-uncased"
 df_results = []
 df_scores = []
 avg_scores = []
 
-for context_text in df["context"]:
-    extracted, scores = extract_with_best_similarity(context_text)
+# === Apply cosine similarity for GPT-4 column (vs context) ===
+gpt4_results = []
+gpt4_scores = []
+gpt4_avg_scores = []
+
+for idx, row in df.iterrows():
+    extracted, scores = extract_with_best_similarity(row["context"])
     df_results.append(extracted)
     df_scores.append(scores)
     avg_scores.append(np.mean(list(scores.values())) if scores else 0.0)
+    
+    gpt4_extracted, gpt4_sim_scores = cosine_similarity_between_columns(row["context"], row.get("gpt4", ""))
+    gpt4_results.append(gpt4_extracted)
+    gpt4_scores.append(gpt4_sim_scores)
+    gpt4_avg_scores.append(np.mean(list(gpt4_sim_scores.values())) if gpt4_sim_scores else 0.0)
 
+# === Save results back to DataFrame ===
 df[MODEL_NAME] = df_results
 df["cosine_similarity_scores"] = df_scores
 df["average_cosine_similarity"] = avg_scores
 
-
-# === Apply cosine similarity for "gpt4" column against "context" ===
-GPT4_MODEL_NAME = "gpt4_cosine_similarity_scores"
-gpt4_scores = []
-gpt4_avg_scores = []
-
-for gpt4_text, context_text in zip(df["gpt4"], df["context"]):
-    scores = cosine_similarity_between_columns(gpt4_text, context_text)
-    gpt4_scores.append(scores)
-    gpt4_avg_scores.append(np.mean(list(scores.values())) if scores else 0.0)
-
-df[GPT4_MODEL_NAME] = gpt4_scores
+df["gpt4_cosine_similarity"] = gpt4_scores
 df["gpt4_average_cosine_similarity"] = gpt4_avg_scores
 
-
-# === Save ===
+# === Save CSV ===
 df.to_csv("results_with_best_cosine_similarity.csv", index=False)
-print("✅ Extraction for 'context' + cosine similarity for 'context' and 'gpt4 vs context' completed and saved.")
+print("Extraction + cosine similarity for context and GPT-4 completed and saved.")
