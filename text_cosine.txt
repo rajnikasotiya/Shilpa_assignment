@@ -1,0 +1,84 @@
+import pandas as pd
+import re
+from sentence_transformers import SentenceTransformer, util
+import numpy as np
+
+# === Load CSV ===
+df = pd.read_csv("results.csv")
+
+# === Categories ===
+CATEGORIES = [
+    "Visit Reason",
+    "Diagnosis",
+    "Past Medical History",
+    "Clinical Details",
+    "Vital Signs",
+    "Exam Results",
+    "Lab Results",
+    "Imaging Test Results",
+    "Hospital and ED course",
+    "Discharge Plan",
+    "Full HPI",
+    "Full Assessment and Plan"
+]
+
+# === Load embedding model ===
+embedder = SentenceTransformer("all-MiniLM-L6-v2")
+
+def extract_with_best_similarity(text, threshold=0.65):
+    """
+    Extract info for each category + compute cosine similarity scores.
+    """
+    text = str(text).strip()
+    result = {cat: [] for cat in CATEGORIES}
+    similarity_scores = {cat: 0.0 for cat in CATEGORIES}
+    
+    # 1️⃣ Heading-based extraction
+    for cat in CATEGORIES:
+        pattern = rf"(?i){cat}\s*[:\-]\s*(.*?)(?=\n[A-Z][a-zA-Z ]*[:\-]|\Z)"
+        match = re.search(pattern, text, re.S)
+        if match:
+            value = match.group(1).strip()
+            if value:
+                extracted = [v.strip() for v in value.split("\n") if v.strip()]
+                result[cat] = extracted
+                similarity_scores[cat] = 1.0  # direct heading match → perfect similarity
+    
+    # 2️⃣ Cosine similarity fallback
+    sentences = [s.strip() for s in re.split(r'[.\n]', text) if s.strip()]
+    if sentences:
+        sentence_embeddings = embedder.encode(sentences, convert_to_tensor=True)
+        
+        for cat in CATEGORIES:
+            if not result[cat]:  # no heading match
+                cat_embedding = embedder.encode(cat, convert_to_tensor=True)
+                cosine_scores = util.cos_sim(cat_embedding, sentence_embeddings)[0]
+                
+                best_idx = int(np.argmax(cosine_scores))
+                best_score = float(cosine_scores[best_idx])
+                
+                if best_score >= threshold:
+                    result[cat] = [sentences[best_idx]]
+                    similarity_scores[cat] = best_score
+    
+    return result, similarity_scores
+
+# === Apply extraction ===
+MODEL_NAME = "distilbert-base-uncased"
+df_results = []
+df_scores = []
+avg_scores = []
+
+for context_text in df["context"]:
+    extracted, scores = extract_with_best_similarity(context_text)
+    df_results.append(extracted)
+    df_scores.append(scores)
+    avg_scores.append(np.mean(list(scores.values())) if scores else 0.0)
+
+df[MODEL_NAME] = df_results
+df["cosine_similarity_scores"] = df_scores
+df["average_cosine_similarity"] = avg_scores
+
+# === Save ===
+df.to_csv("results_with_best_cosine_similarity.csv", index=False)
+print("✅ Extraction + cosine similarity completed and saved.")
