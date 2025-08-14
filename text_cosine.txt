@@ -27,10 +27,13 @@ CATEGORIES = list(CATEGORY_ALIASES.keys())
 # === Load embedding model ===
 embedder = SentenceTransformer("all-MiniLM-L6-v2")
 
-def extract_with_best_similarity(text, threshold=0.65, top_k=3):
+
+def extract_with_best_similarity(text, threshold=0.65, top_k=3, extra_sentences=2):
     """
     Extract info for each category with heading match (fuzzy via aliases) 
     and fallback to top-N cosine similarity matches.
+    Also appends a few sentences after heading matches for more context,
+    but stops if another category heading is encountered.
     """
     text = str(text).strip()
     result = {cat: [] for cat in CATEGORIES}
@@ -45,8 +48,25 @@ def extract_with_best_similarity(text, threshold=0.65, top_k=3):
             if match:
                 value = match.group(1).strip()
                 if value:
-                    # Keep multi-line content together
+                    # Extract main block
                     extracted = [v.strip() for v in value.split("\n") if v.strip()]
+                    
+                    # === Add extra sentences after heading block ===
+                    end_pos = match.end(1)
+                    remaining_text = text[end_pos:].strip()
+                    
+                    # Stop if the remaining text starts with another heading
+                    stop_pattern = rf"(?i)^\s*({'|'.join(re.escape(a) for aliases in CATEGORY_ALIASES.values() for a in aliases)})\s*[:\-]"
+                    # Replace any later heading with a stop marker to avoid capturing next category
+                    remaining_text = re.split(stop_pattern, remaining_text, maxsplit=1)[0]
+                    
+                    # Take N extra sentences
+                    extra_sent_list = re.split(r'(?<=[.!?])\s+', remaining_text)
+                    extra_sent_list = [s.strip() for s in extra_sent_list if s.strip()]
+                    if extra_sent_list:
+                        extracted.extend(extra_sent_list[:extra_sentences])
+                    # =================================================
+                    
                     result[cat] = extracted
                     similarity_scores[cat] = 1.0
                     found_match = True
@@ -77,6 +97,7 @@ def extract_with_best_similarity(text, threshold=0.65, top_k=3):
     
     return result, similarity_scores
 
+
 # === Apply extraction ===
 MODEL_NAME = "distilbert-base-uncased"
 df_results = []
@@ -95,4 +116,4 @@ df["average_cosine_similarity"] = avg_scores
 
 # === Save ===
 df.to_csv("results_with_best_cosine_similarity.csv", index=False)
-print("✅ Improved extraction + cosine similarity completed and saved.")
+print("Improved extraction + cosine similarity with extra sentences completed and saved.")
