@@ -1,66 +1,72 @@
 import pandas as pd
-import json
-from transformers import pipeline
-from tqdm import tqdm
+import re
+from sentence_transformers import SentenceTransformer, util
 
-# === Step 1: Load CSV ===
-file_path = "results.csv"  # change to your file name
-df = pd.read_csv(file_path)
+# === Load CSV ===
+df = pd.read_csv("results.csv")
 
-# === Step 2: Load Phi-2 as text-generation pipeline ===
-generator = pipeline(
-    "text-generation",
-    model="microsoft/phi-2",
-    torch_dtype="auto",
-    device_map="auto",
-    do_sample=False
-)
+# === Categories we want to extract ===
+CATEGORIES = [
+    "Visit Reason",
+    "Diagnosis",
+    "Past Medical History",
+    "Clinical Details",
+    "Vital Signs",
+    "Exam Results",
+    "Lab Results",
+    "Imaging Test Results",
+    "Hospital and ED course",
+    "Discharge Plan",
+    "Full HPI",
+    "Full Assessment and Plan"
+]
 
-# === Step 3: Function to extract structured JSON in your format ===
-def extract_info(text):
-    # Pre-truncate if text too long (approx 480 tokens worth of chars)
-    max_chars = 1500
-    if len(text) > max_chars:
-        text = text[:max_chars]
+# === Load embedding model ===
+# This model is small but very good for semantic similarity
+embedder = SentenceTransformer("all-MiniLM-L6-v2")
 
-    prompt = (
-        "From the following medical text, extract and format ONLY as JSON with this exact structure:\n"
-        '{ "Visit Reason": [], '
-        '"Diagnosis": [], '
-        '"Past Medical History": [], '
-        '"Clinical Details": [], '
-        '"Vital Signs": [], '
-        '"Exam Results": [], '
-        '"Lab Results": [], '
-        '"Imaging Test Results": [], '
-        '"Hospital and ED course": [], '
-        '"Discharge Plan": [], '
-        '"Full HPI": [], '
-        '"Full Assessment and Plan": [] }\n\n'
-        "Fill each array with strings extracted from the text where applicable. "
-        "If no data for a field, leave as empty array [].\n"
-        "Do NOT add any explanation text, only return valid JSON.\n\n"
-        f"Text: {text}\n"
-        "JSON:"
-    )
+def extract_with_best_similarity(text, threshold=0.65):
+    """
+    Extract category-specific info from text.
+    First try regex (if headings exist).
+    If not found, fall back to semantic similarity search
+    and return the single most relevant sentence for each category.
+    """
+    text = str(text).strip()
+    result = {cat: [] for cat in CATEGORIES}
+    
+    # 1️⃣ Try heading-based extraction (Regex)
+    for cat in CATEGORIES:
+        pattern = rf"(?i){cat}\s*[:\-]\s*(.*?)(?=\n[A-Z][a-zA-Z ]*[:\-]|\Z)"
+        match = re.search(pattern, text, re.S)
+        if match:
+            value = match.group(1).strip()
+            if value:
+                result[cat] = [v.strip() for v in value.split("\n") if v.strip()]
+    
+    # 2️⃣ If heading not found, use cosine similarity to find best match
+    sentences = [s.strip() for s in re.split(r'[.\n]', text) if s.strip()]
+    sentence_embeddings = embedder.encode(sentences, convert_to_tensor=True)
+    
+    for cat in CATEGORIES:
+        if not result[cat]:  # No direct match
+            cat_embedding = embedder.encode(cat, convert_to_tensor=True)
+            cosine_scores = util.cos_sim(cat_embedding, sentence_embeddings)[0]
+            
+            best_score, best_idx = float('-inf'), None
+            for idx, score in enumerate(cosine_scores):
+                if score > best_score and score >= threshold:
+                    best_score, best_idx = float(score), idx
+            
+            if best_idx is not None:
+                result[cat] = [sentences[best_idx]]
+    
+    return result
 
-    output = generator(prompt, max_new_tokens=400)[0]['generated_text']
+# === Apply the function to each row ===
+MODEL_NAME = "distilbert-base-uncased"
+df[MODEL_NAME] = df["context"].apply(lambda x: extract_with_best_similarity(x))
 
-    try:
-        json_start = output.find("{")
-        json_end = output.rfind("}") + 1
-        if json_start != -1 and json_end != -1:
-            parsed = json.loads(output[json_start:json_end])
-            return json.dumps(parsed, ensure_ascii=False)
-        else:
-            return output
-    except:
-        return output
-
-# === Step 4: Apply with progress bar ===
-tqdm.pandas(desc="Processing Notes with Phi-2")
-df["microsoft/phi-2"] = df["context"].progress_apply(extract_info)
-
-# === Step 5: Save back to same file ===
-df.to_csv(file_path, index=False)
-print(f"✅ Processing complete. Updated file saved: {file_path}")
+# === Save results ===
+df.to_csv("results_with_best_cosine_similarity.csv", index=False)
+print("✅ Extraction completed with best match per category.")
