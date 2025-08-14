@@ -4,56 +4,61 @@ from transformers import pipeline
 from tqdm import tqdm
 
 # === Step 1: Load CSV ===
-file_path = "results.csv"
+file_path = "results.csv"  # change to your file name
 df = pd.read_csv(file_path)
 
-# === Step 2: Load a simple instruction-following model ===
+# === Step 2: Load text-generation pipeline (simple, small model for testing) ===
 generator = pipeline(
     "text-generation",
-    model="tiiuae/falcon-7b-instruct",  # smaller: "tiiuae/falcon-3b-instruct"
+    model="gpt2",  # small and easy to run; replace with bigger model later if needed
     torch_dtype="auto",
     device_map="auto",
     do_sample=False
 )
 
-# === Step 3: Function to extract structured JSON ===
+# === Step 3: Function to extract structured JSON in required format ===
 def extract_info(text):
-    max_chars = 1500  # prevent exceeding context length
+    max_chars = 1500  # truncate very long text for processing
     if len(text) > max_chars:
         text = text[:max_chars]
 
-    prompt = (
-        "From the following medical text, extract the following information and return in JSON format.\n"
-        "Include short explanations inside each array entry.\n\n"
-        "Definitions of fields:\n"
-        "Visit Reason: The main complaint or reason the patient is seeking care.\n"
-        "Diagnosis: The doctor's conclusion about the patient's condition.\n"
-        "Past Medical History: Previous illnesses, surgeries, or conditions.\n"
-        "Clinical Details: Summary of the patient's symptoms, history, and physical findings.\n"
-        "Vital Signs: Measurements like blood pressure, heart rate, temperature.\n"
-        "Exam Results: Findings from physical examinations.\n"
-        "Lab Results: Results of laboratory tests (blood, urine, etc.).\n"
-        "Imaging Test Results: Findings from X-ray, MRI, CT, etc.\n"
-        "Hospital and ED course: Summary of treatment during hospital or ER stay.\n"
-        "Discharge Plan: Instructions given when patient leaves care.\n"
-        "Full HPI: Detailed history of present illness.\n"
-        "Full Assessment and Plan: Complete doctor’s assessment and planned treatment.\n\n"
-        "Text:\n"
-        f"{text}\n\n"
-        "Return JSON in this structure:\n"
-        '{ "Visit Reason": [], '
-        '"Diagnosis": [], '
-        '"Past Medical History": [], '
-        '"Clinical Details": [], '
-        '"Vital Signs": [], '
-        '"Exam Results": [], '
-        '"Lab Results": [], '
-        '"Imaging Test Results": [], '
-        '"Hospital and ED course": [], '
-        '"Discharge Plan": [], '
-        '"Full HPI": [], '
-        '"Full Assessment and Plan": [] }\n"
-    )
+    prompt = f"""
+From the following medical text, extract the following information and return in JSON format.
+Include short explanations inside each array entry.
+
+Definitions of fields:
+Visit Reason: The main complaint or reason the patient is seeking care.
+Diagnosis: The doctor's conclusion about the patient's condition.
+Past Medical History: Previous illnesses, surgeries, or conditions.
+Clinical Details: Summary of the patient's symptoms, history, and physical findings.
+Vital Signs: Measurements like blood pressure, heart rate, temperature.
+Exam Results: Findings from physical examinations.
+Lab Results: Results of laboratory tests (blood, urine, etc.).
+Imaging Test Results: Findings from X-ray, MRI, CT, etc.
+Hospital and ED course: Summary of treatment during hospital or ER stay.
+Discharge Plan: Instructions given when patient leaves care.
+Full HPI: Detailed history of present illness.
+Full Assessment and Plan: Complete doctor’s assessment and planned treatment.
+
+Text:
+{text}
+
+Return JSON in this structure:
+{{
+  "Visit Reason": [],
+  "Diagnosis": [],
+  "Past Medical History": [],
+  "Clinical Details": [],
+  "Vital Signs": [],
+  "Exam Results": [],
+  "Lab Results": [],
+  "Imaging Test Results": [],
+  "Hospital and ED course": [],
+  "Discharge Plan": [],
+  "Full HPI": [],
+  "Full Assessment and Plan": []
+}}
+"""
 
     output = generator(prompt, max_new_tokens=500)[0]['generated_text']
 
@@ -69,8 +74,8 @@ def extract_info(text):
         return output
 
 # === Step 4: Apply with progress bar ===
-tqdm.pandas()
-df["extracted_info"] = df["context"].progress_apply(extract_info)
+tqdm.pandas(desc="Processing rows")
+df["gpt2_output"] = df["context"].progress_apply(extract_info)
 
 # === Step 5: Save updated CSV ===
 df.to_csv(file_path, index=False)
