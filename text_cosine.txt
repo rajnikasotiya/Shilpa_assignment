@@ -6,60 +6,74 @@ import numpy as np
 # === Load CSV ===
 df = pd.read_csv("results.csv")
 
-# === Categories ===
-CATEGORIES = [
-    "Visit Reason",
-    "Diagnosis",
-    "Past Medical History",
-    "Clinical Details",
-    "Vital Signs",
-    "Exam Results",
-    "Lab Results",
-    "Imaging Test Results",
-    "Hospital and ED course",
-    "Discharge Plan",
-    "Full HPI",
-    "Full Assessment and Plan"
-]
+# === Categories & aliases ===
+CATEGORY_ALIASES = {
+    "Visit Reason": ["Visit Reason", "Reason for Visit", "Chief Complaint"],
+    "Diagnosis": ["Diagnosis", "Final Diagnosis", "Provisional Diagnosis"],
+    "Past Medical History": ["Past Medical History", "PMH", "History of Illness"],
+    "Clinical Details": ["Clinical Details", "Clinical Notes", "Case Details"],
+    "Vital Signs": ["Vital Signs", "Vitals", "Patient Vitals"],
+    "Exam Results": ["Exam Results", "Physical Examination", "Exam Findings"],
+    "Lab Results": ["Lab Results", "Laboratory Findings", "Labs"],
+    "Imaging Test Results": ["Imaging Test Results", "Radiology", "Imaging Results"],
+    "Hospital and ED course": ["Hospital and ED course", "ED Course", "Hospital Course"],
+    "Discharge Plan": ["Discharge Plan", "Plan at Discharge", "Discharge Instructions"],
+    "Full HPI": ["Full HPI", "History of Present Illness", "HPI"],
+    "Full Assessment and Plan": ["Full Assessment and Plan", "Assessment and Plan", "Plan"]
+}
+
+CATEGORIES = list(CATEGORY_ALIASES.keys())
 
 # === Load embedding model ===
 embedder = SentenceTransformer("all-MiniLM-L6-v2")
 
-def extract_with_best_similarity(text, threshold=0.65):
+def extract_with_best_similarity(text, threshold=0.65, top_k=3):
     """
-    Extract info for each category + compute cosine similarity scores.
+    Extract info for each category with heading match (fuzzy via aliases) 
+    and fallback to top-N cosine similarity matches.
     """
     text = str(text).strip()
     result = {cat: [] for cat in CATEGORIES}
     similarity_scores = {cat: 0.0 for cat in CATEGORIES}
     
-    # 1️⃣ Heading-based extraction
-    for cat in CATEGORIES:
-        pattern = rf"(?i){cat}\s*[:\-]\s*(.*?)(?=\n[A-Z][a-zA-Z ]*[:\-]|\Z)"
-        match = re.search(pattern, text, re.S)
-        if match:
-            value = match.group(1).strip()
-            if value:
-                extracted = [v.strip() for v in value.split("\n") if v.strip()]
-                result[cat] = extracted
-                similarity_scores[cat] = 1.0  # direct heading match → perfect similarity
+    # === Heading-based extraction (fuzzy match via aliases) ===
+    for cat, aliases in CATEGORY_ALIASES.items():
+        found_match = False
+        for alias in aliases:
+            pattern = rf"(?i){re.escape(alias)}\s*[:\-]?\s*(.*?)(?=\n[A-Z].*[:\-]|\Z)"
+            match = re.search(pattern, text, re.S)
+            if match:
+                value = match.group(1).strip()
+                if value:
+                    # Keep multi-line content together
+                    extracted = [v.strip() for v in value.split("\n") if v.strip()]
+                    result[cat] = extracted
+                    similarity_scores[cat] = 1.0
+                    found_match = True
+                    break  # stop checking aliases if found
+        if found_match:
+            continue
     
-    # 2️⃣ Cosine similarity fallback
-    sentences = [s.strip() for s in re.split(r'[.\n]', text) if s.strip()]
-    if sentences:
-        sentence_embeddings = embedder.encode(sentences, convert_to_tensor=True)
+    # === Fallback: cosine similarity (top-N sentences) ===
+    paragraphs = [p.strip() for p in text.split("\n") if p.strip()]  # preserve context
+    if paragraphs:
+        para_embeddings = embedder.encode(paragraphs, convert_to_tensor=True)
         
         for cat in CATEGORIES:
             if not result[cat]:  # no heading match
                 cat_embedding = embedder.encode(cat, convert_to_tensor=True)
-                cosine_scores = util.cos_sim(cat_embedding, sentence_embeddings)[0]
+                cosine_scores = util.cos_sim(cat_embedding, para_embeddings)[0]
                 
-                best_idx = int(np.argmax(cosine_scores))
-                best_score = float(cosine_scores[best_idx])
+                # Get top-N relevant paragraphs above threshold
+                top_indices = np.argsort(cosine_scores.cpu().numpy())[::-1][:top_k]
+                top_matches = [
+                    paragraphs[idx] for idx in top_indices 
+                    if cosine_scores[idx] >= threshold
+                ]
                 
-                if best_score >= threshold:
-                    result[cat] = [sentences[best_idx]]
-                    similarity_scores[cat] = best_score
+                if top_matches:
+                    result[cat] = top_matches
+                    similarity_scores[cat] = float(max(cosine_scores[idx] for idx in top_indices))
     
     return result, similarity_scores
 
@@ -81,4 +95,4 @@ df["average_cosine_similarity"] = avg_scores
 
 # === Save ===
 df.to_csv("results_with_best_cosine_similarity.csv", index=False)
-print("✅ Extraction + cosine similarity completed and saved.")
+print("✅ Improved extraction + cosine similarity completed and saved.")
