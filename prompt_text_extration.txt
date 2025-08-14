@@ -7,18 +7,21 @@ from tqdm import tqdm
 file_path = "results.csv"  # change to your file name
 df = pd.read_csv(file_path)
 
-# === Step 2: Load text-generation pipeline (simple, small model for testing) ===
+# === Step 2: Load instruction-tuned model ===
 generator = pipeline(
     "text-generation",
-    model="gpt2",  # small and easy to run; replace with bigger model later if needed
+    model="mistralai/Mistral-7B-Instruct-v0.3",
     torch_dtype="auto",
     device_map="auto",
     do_sample=False
 )
 
-# === Step 3: Function to extract structured JSON in required format ===
+# === Step 3: Function to extract structured info ===
 def extract_info(text):
-    max_chars = 1500  # truncate very long text for processing
+    if not isinstance(text, str):
+        return "{}"
+
+    max_chars = 1500  # limit context size for performance
     if len(text) > max_chars:
         text = text[:max_chars]
 
@@ -60,9 +63,14 @@ Return JSON in this structure:
 }}
 """
 
-    output = generator(prompt, max_new_tokens=500)[0]['generated_text']
-
     try:
+        result = generator(prompt, max_new_tokens=500)
+        if not result or "generated_text" not in result[0]:
+            return "{}"
+
+        output = result[0]["generated_text"]
+
+        # Extract only JSON part
         json_start = output.find("{")
         json_end = output.rfind("}") + 1
         if json_start != -1 and json_end != -1:
@@ -70,12 +78,12 @@ Return JSON in this structure:
             return json.dumps(parsed, ensure_ascii=False)
         else:
             return output
-    except:
-        return output
+    except Exception as e:
+        return f"ERROR: {str(e)}"
 
 # === Step 4: Apply with progress bar ===
 tqdm.pandas(desc="Processing rows")
-df["gpt2_output"] = df["context"].progress_apply(extract_info)
+df["mistral_output"] = df["context"].progress_apply(extract_info)
 
 # === Step 5: Save updated CSV ===
 df.to_csv(file_path, index=False)
