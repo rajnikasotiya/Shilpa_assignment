@@ -48,19 +48,15 @@ def extract_with_best_similarity(text, threshold=0.65, top_k=3, extra_sentences=
             if match:
                 value = match.group(1).strip()
                 if value:
-                    # Extract main block
                     extracted = [v.strip() for v in value.split("\n") if v.strip()]
                     
                     # === Add extra sentences after heading block ===
                     end_pos = match.end(1)
                     remaining_text = text[end_pos:].strip()
                     
-                    # Stop if the remaining text starts with another heading
                     stop_pattern = rf"(?i)^\s*({'|'.join(re.escape(a) for aliases in CATEGORY_ALIASES.values() for a in aliases)})\s*[:\-]"
-                    # Replace any later heading with a stop marker to avoid capturing next category
                     remaining_text = re.split(stop_pattern, remaining_text, maxsplit=1)[0]
                     
-                    # Take N extra sentences
                     extra_sent_list = re.split(r'(?<=[.!?])\s+', remaining_text)
                     extra_sent_list = [s.strip() for s in extra_sent_list if s.strip()]
                     if extra_sent_list:
@@ -70,7 +66,7 @@ def extract_with_best_similarity(text, threshold=0.65, top_k=3, extra_sentences=
                     result[cat] = extracted
                     similarity_scores[cat] = 1.0
                     found_match = True
-                    break  # stop checking aliases if found
+                    break
         if found_match:
             continue
     
@@ -84,7 +80,6 @@ def extract_with_best_similarity(text, threshold=0.65, top_k=3, extra_sentences=
                 cat_embedding = embedder.encode(cat, convert_to_tensor=True)
                 cosine_scores = util.cos_sim(cat_embedding, para_embeddings)[0]
                 
-                # Get top-N relevant paragraphs above threshold
                 top_indices = np.argsort(cosine_scores.cpu().numpy())[::-1][:top_k]
                 top_matches = [
                     paragraphs[idx] for idx in top_indices 
@@ -98,7 +93,7 @@ def extract_with_best_similarity(text, threshold=0.65, top_k=3, extra_sentences=
     return result, similarity_scores
 
 
-# === Apply extraction ===
+# === Apply extraction for "context" column (DistilBERT) ===
 MODEL_NAME = "distilbert-base-uncased"
 df_results = []
 df_scores = []
@@ -114,6 +109,21 @@ df[MODEL_NAME] = df_results
 df["cosine_similarity_scores"] = df_scores
 df["average_cosine_similarity"] = avg_scores
 
+
+# === Apply cosine similarity for "gpt4" column ===
+GPT4_MODEL_NAME = "gpt4_cosine_similarity_scores"
+gpt4_scores = []
+gpt4_avg_scores = []
+
+for gpt4_text in df["gpt4"]:
+    _, scores = extract_with_best_similarity(gpt4_text)
+    gpt4_scores.append(scores)
+    gpt4_avg_scores.append(np.mean(list(scores.values())) if scores else 0.0)
+
+df[GPT4_MODEL_NAME] = gpt4_scores
+df["gpt4_average_cosine_similarity"] = gpt4_avg_scores
+
+
 # === Save ===
 df.to_csv("results_with_best_cosine_similarity.csv", index=False)
-print("Improved extraction + cosine similarity with extra sentences completed and saved.")
+print("✅ Extraction + cosine similarity for 'context' and 'gpt4' columns completed and saved.")
