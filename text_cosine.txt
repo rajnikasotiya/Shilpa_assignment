@@ -71,12 +71,12 @@ def extract_with_best_similarity(text, threshold=0.65, top_k=3, extra_sentences=
             continue
     
     # === Fallback: cosine similarity (top-N sentences) ===
-    paragraphs = [p.strip() for p in text.split("\n") if p.strip()]  # preserve context
+    paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
     if paragraphs:
         para_embeddings = embedder.encode(paragraphs, convert_to_tensor=True)
         
         for cat in CATEGORIES:
-            if not result[cat]:  # no heading match
+            if not result[cat]:
                 cat_embedding = embedder.encode(cat, convert_to_tensor=True)
                 cosine_scores = util.cos_sim(cat_embedding, para_embeddings)[0]
                 
@@ -93,7 +93,33 @@ def extract_with_best_similarity(text, threshold=0.65, top_k=3, extra_sentences=
     return result, similarity_scores
 
 
-# === Apply extraction for "context" column (DistilBERT) ===
+def cosine_similarity_between_columns(source_text, target_text, threshold=0.65, top_k=3):
+    """
+    Calculate cosine similarity of each category in source_text 
+    against all paragraphs in target_text.
+    """
+    target_paragraphs = [p.strip() for p in str(target_text).split("\n") if p.strip()]
+    target_embeddings = embedder.encode(target_paragraphs, convert_to_tensor=True) if target_paragraphs else None
+    
+    scores = {cat: 0.0 for cat in CATEGORIES}
+    
+    if not target_embeddings:
+        return scores
+    
+    for cat in CATEGORIES:
+        cat_embedding = embedder.encode(cat, convert_to_tensor=True)
+        cosine_scores = util.cos_sim(cat_embedding, target_embeddings)[0]
+        
+        top_indices = np.argsort(cosine_scores.cpu().numpy())[::-1][:top_k]
+        valid_scores = [cosine_scores[idx] for idx in top_indices if cosine_scores[idx] >= threshold]
+        
+        if valid_scores:
+            scores[cat] = float(max(valid_scores))
+    
+    return scores
+
+
+# === Apply extraction for "context" column ===
 MODEL_NAME = "distilbert-base-uncased"
 df_results = []
 df_scores = []
@@ -110,13 +136,13 @@ df["cosine_similarity_scores"] = df_scores
 df["average_cosine_similarity"] = avg_scores
 
 
-# === Apply cosine similarity for "gpt4" column ===
+# === Apply cosine similarity for "gpt4" column against "context" ===
 GPT4_MODEL_NAME = "gpt4_cosine_similarity_scores"
 gpt4_scores = []
 gpt4_avg_scores = []
 
-for gpt4_text in df["gpt4"]:
-    _, scores = extract_with_best_similarity(gpt4_text)
+for gpt4_text, context_text in zip(df["gpt4"], df["context"]):
+    scores = cosine_similarity_between_columns(gpt4_text, context_text)
     gpt4_scores.append(scores)
     gpt4_avg_scores.append(np.mean(list(scores.values())) if scores else 0.0)
 
@@ -126,4 +152,4 @@ df["gpt4_average_cosine_similarity"] = gpt4_avg_scores
 
 # === Save ===
 df.to_csv("results_with_best_cosine_similarity.csv", index=False)
-print("✅ Extraction + cosine similarity for 'context' and 'gpt4' columns completed and saved.")
+print("✅ Extraction for 'context' + cosine similarity for 'context' and 'gpt4 vs context' completed and saved.")
