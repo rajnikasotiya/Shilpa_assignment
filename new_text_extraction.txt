@@ -25,8 +25,9 @@ CATEGORY_DEFINITIONS = {
     "Hospital and ED course": "Summary of events during hospital or ED stay in short phrases.",
     "Discharge Plan": "Instructions or follow-up steps in concise phrases.",
     "Full HPI": "Full History of Present Illness as detailed text.",
-    "Full Assessment and Plan": "Complete assessment and detailed plan for ongoing management."
+    "Full Assessment and Plan": "Complete assessment and detailed plan for ongoing management"
 }
+
 
 # === Function to extract info with empty lists for missing fields ===
 def extract_with_prompt(text):
