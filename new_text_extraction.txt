@@ -1,52 +1,66 @@
 import pandas as pd
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 import json
-from sentence_transformers import SentenceTransformer, util
+from tqdm import tqdm
 
 # === Load CSV ===
-df = pd.read_csv("medical.csv")  # assumes column "info" contains medical text
+df = pd.read_csv("medical.csv")  # 'info' column
 
-# === Categories ===
-CATEGORIES = [
-    "Visit Reason",
-    "History",
-    "Diagnosis",
-    "Lab Results",
-    "Treatment Plan"
-]
+# === Load instruction-tuned model ===
+model_name = "google/flan-t5-large"
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
 
-# === Load Biomedical SentenceTransformer model ===
-model = SentenceTransformer("pritamdeka/BioBERT-mnli-snli-scinli-scitail-mednli-stsb")
+# === Define fields and definitions ===
+CATEGORY_DEFINITIONS = {
+    "Visit Reason": "List the main symptoms or complaints that led the patient to visit. Return as a list of short phrases.",
+    "History": "List relevant past medical history as short phrases. Return as a list.",
+    "Diagnosis": "List suspected or confirmed diagnoses as short phrases. Return as a list.",
+    "Lab Results": "List relevant laboratory findings as concise phrases. Return as a list.",
+    "Treatment Plan": "List treatments, medications, or procedures as short phrases. Return as a list.",
+    "Clinical Details": "Additional observations, expressed as short phrases if possible.",
+    "Vital Signs": "Patient's vital signs as concise key-value phrases.",
+    "Exam Results": "Concise findings from physical exam as phrases.",
+    "Imaging Test Results": "Key results from imaging studies as phrases.",
+    "Hospital and ED course": "Summary of events during hospital or ED stay in short phrases.",
+    "Discharge Plan": "Instructions or follow-up steps in concise phrases.",
+    "Full HPI": "Full History of Present Illness as detailed text.",
+    "Full Assessment and Plan": "Complete assessment and detailed plan for ongoing management."
+}
 
-# === Function to extract info from a single text ===
-def extract_medical_info(text, k=1):
-    sentences = [s.strip() for s in text.split('.') if s.strip()]
-    if not sentences:
-        return {cat: "" for cat in CATEGORIES}
+# === Function to extract info with empty lists for missing fields ===
+def extract_with_prompt(text):
+    prompt = "Extract medical information from the text below. " \
+             "For fields that can have multiple items, return a list of short phrases. " \
+             "Return all output as valid JSON.\n\n"
+    
+    for field, desc in CATEGORY_DEFINITIONS.items():
+        prompt += f"- {field}: {desc}\n"
+    
+    prompt += f"\nMedical Record:\n{text}\n\nJSON Output:"
+    
+    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=1024)
+    outputs = model.generate(**inputs, max_length=1024)
+    result = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    
+    try:
+        extracted = json.loads(result)
+    except:
+        extracted = {}  # fallback if JSON is invalid
+    
+    # Ensure all fields are present; missing fields fixed as empty list
+    for field in CATEGORY_DEFINITIONS.keys():
+        if field not in extracted or extracted[field] is None:
+            extracted[field] = []
+    
+    return extracted
 
-    sentence_embeddings = model.encode(sentences, convert_to_tensor=True)
-    category_embeddings = model.encode(CATEGORIES, convert_to_tensor=True)
+# === Apply to each row ===
+extracted_jsons = []
+for text in tqdm(df['info']):
+    extracted_jsons.append(extract_with_prompt(str(text)))
 
-    extracted_info = {}
-    used_sentences = set()
+df['extracted_json'] = extracted_jsons
+df.to_csv("medical_extracted_emptylist.json.csv", index=False)
 
-    for i, category in enumerate(CATEGORIES):
-        similarities = util.cos_sim(category_embeddings[i], sentence_embeddings)[0]
-        top_idx = int(similarities.argmax())
-        selected_sentence = sentences[top_idx]
-
-        # Avoid duplicate sentences
-        if selected_sentence in used_sentences:
-            extracted_info[category] = ""
-        else:
-            extracted_info[category] = selected_sentence
-            used_sentences.add(selected_sentence)
-
-    return extracted_info
-
-# === Apply extraction to each row and store JSON in a single column ===
-df['extracted_json'] = df['info'].apply(lambda x: json.dumps(extract_medical_info(str(x))))
-
-# === Save updated CSV ===
-df.to_csv("medical_extracted.json.csv", index=False)
-
-print("Extraction completed! JSON output saved in 'extracted_json' column")
+print("Extraction completed! JSON output is in 'extracted_json' column with missing fields as empty lists.")
