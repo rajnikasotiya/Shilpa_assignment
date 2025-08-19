@@ -31,9 +31,10 @@ CATEGORY_DEFINITIONS = {
 
 # === Function to extract info with empty lists for missing fields ===
 def extract_with_prompt(text):
-    prompt = "Extract medical information from the text below. " \
-             "For fields that can have multiple items, return a list of short phrases. " \
-             "Return all output as valid JSON.\n\n"
+    prompt = """Extract medical information from the text below.
+For fields that can have multiple items, return a list of short phrases.
+Return all output as valid JSON.
+"""
     
     for field, desc in CATEGORY_DEFINITIONS.items():
         prompt += f"- {field}: {desc}\n"
