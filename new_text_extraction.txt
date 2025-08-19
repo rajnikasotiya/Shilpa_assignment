@@ -1,0 +1,52 @@
+import pandas as pd
+import json
+from sentence_transformers import SentenceTransformer, util
+
+# === Load CSV ===
+df = pd.read_csv("medical.csv")  # assumes column "info" contains medical text
+
+# === Categories ===
+CATEGORIES = [
+    "Visit Reason",
+    "History",
+    "Diagnosis",
+    "Lab Results",
+    "Treatment Plan"
+]
+
+# === Load Biomedical SentenceTransformer model ===
+model = SentenceTransformer("pritamdeka/BioBERT-mnli-snli-scinli-scitail-mednli-stsb")
+
+# === Function to extract info from a single text ===
+def extract_medical_info(text, k=1):
+    sentences = [s.strip() for s in text.split('.') if s.strip()]
+    if not sentences:
+        return {cat: "" for cat in CATEGORIES}
+
+    sentence_embeddings = model.encode(sentences, convert_to_tensor=True)
+    category_embeddings = model.encode(CATEGORIES, convert_to_tensor=True)
+
+    extracted_info = {}
+    used_sentences = set()
+
+    for i, category in enumerate(CATEGORIES):
+        similarities = util.cos_sim(category_embeddings[i], sentence_embeddings)[0]
+        top_idx = int(similarities.argmax())
+        selected_sentence = sentences[top_idx]
+
+        # Avoid duplicate sentences
+        if selected_sentence in used_sentences:
+            extracted_info[category] = ""
+        else:
+            extracted_info[category] = selected_sentence
+            used_sentences.add(selected_sentence)
+
+    return extracted_info
+
+# === Apply extraction to each row and store JSON in a single column ===
+df['extracted_json'] = df['info'].apply(lambda x: json.dumps(extract_medical_info(str(x))))
+
+# === Save updated CSV ===
+df.to_csv("medical_extracted.json.csv", index=False)
+
+print("Extraction completed! JSON output saved in 'extracted_json' column")
