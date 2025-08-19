@@ -4,6 +4,110 @@ import json
 from tqdm import tqdm
 
 # === Load CSV ===
+df = pd.read_csv("medical.csv")  # assumes 'info' column exists
+
+# === Load model ===
+model_name = "google/flan-t5-large"
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+
+# === Define fields with concise instructions ===
+CATEGORY_DEFINITIONS = {
+    "Visit Reason": "List symptoms or complaints. Return as list of short phrases.",
+    "History": "List relevant past medical history. Return as list of short phrases.",
+    "Diagnosis": "List diagnoses. Return as list of short phrases.",
+    "Lab Results": "List lab findings. Return as list of short phrases.",
+    "Treatment Plan": "List treatments, medications, procedures. Return as list of short phrases.",
+    "Clinical Details": "Other clinical observations. Return as list of short phrases.",
+    "Vital Signs": "Patient's vital signs as concise key-value phrases.",
+    "Exam Results": "Physical exam findings as short phrases.",
+    "Imaging Test Results": "Key imaging findings as phrases.",
+    "Hospital and ED course": "Hospital/ED events as short phrases.",
+    "Discharge Plan": "Follow-up instructions or steps as phrases.",
+    "Full HPI": "Full History of Present Illness as detailed text.",
+    "Full Assessment and Plan": "Full assessment and management plan as text."
+}
+
+# === Function to split text into chunks for long records ===
+def split_text(text, max_tokens=800):
+    words = text.split()
+    chunks = []
+    for i in range(0, len(words), max_tokens):
+        chunks.append(" ".join(words[i:i+max_tokens]))
+    return chunks
+
+# === Function to extract info from a single chunk ===
+def extract_chunk(text_chunk):
+    prompt = """Extract the following fields from the medical record below.
+For fields that can have multiple items, return a list of short phrases.
+If a field is not explicitly mentioned, infer the most relevant information from the text.
+Return all output as valid JSON.
+"""
+    for field, desc in CATEGORY_DEFINITIONS.items():
+        prompt += f"- {field}: {desc}\n"
+    prompt += f"\nMedical Record:\n{text_chunk}\n\nJSON Output:"
+
+    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=1024)
+    outputs = model.generate(**inputs, max_length=1024)
+    result = tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+    try:
+        return json.loads(result)
+    except:
+        return {}
+
+# === Function to extract from full text (merge chunks) ===
+def extract_with_prompt(text):
+    chunks = split_text(text)
+    merged = {field: [] for field in CATEGORY_DEFINITIONS.keys()}
+
+    for chunk in chunks:
+        extracted = extract_chunk(chunk)
+        for field in CATEGORY_DEFINITIONS.keys():
+            value = extracted.get(field, [])
+            # Convert string fields to list if needed
+            if isinstance(value, str) and field not in ["Full HPI", "Full Assessment and Plan"]:
+                value = [value] if value.strip() else []
+            elif value is None:
+                value = []
+            elif not isinstance(value, list) and field not in ["Full HPI", "Full Assessment and Plan"]:
+                value = [str(value)]
+
+            if field in ["Full HPI", "Full Assessment and Plan"]:
+                if isinstance(value, list):
+                    value = " ".join(value)
+                merged[field] += [value] if value else []
+            else:
+                merged[field] += value
+
+    # Post-process text fields
+    for field in ["Full HPI", "Full Assessment and Plan"]:
+        merged[field] = " ".join([v for v in merged[field] if v]).strip()
+
+    # Ensure list fields are empty if nothing found
+    for field in CATEGORY_DEFINITIONS.keys():
+        if merged[field] is None:
+            merged[field] = []
+
+    return merged
+
+# === Apply extraction to each row ===
+extracted_jsons = []
+for text in tqdm(df['info']):
+    extracted_jsons.append(extract_with_prompt(str(text)))
+
+df['extracted_json'] = extracted_jsons
+
+# === Save to CSV ===
+df.to_csv("medical_extracted_final.json.csv", index=False)
+
+print("Extraction completed! JSON output is in 'extracted_json' column with all fields inferred from input text.")
+import pandas as pd
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+import json
+from tqdm import tqdm
+
+# === Load CSV ===
 df = pd.read_csv("medical.csv")  # 'info' column
 
 # === Load instruction-tuned model ===
