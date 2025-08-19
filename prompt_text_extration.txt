@@ -1,13 +1,13 @@
 import pandas as pd
 import json
-from transformers import pipeline
 from tqdm import tqdm
+from transformers import pipeline
 
 # === Step 1: Load CSV ===
 file_path = "results.csv"  # change to your file name
 df = pd.read_csv(file_path)
 
-# === Step 2: Load instruction-tuned Falcon model ===
+# === Step 2: Load Falcon model ===
 generator = pipeline(
     "text-generation",
     model="tiiuae/falcon-7b-instruct",
@@ -16,75 +16,60 @@ generator = pipeline(
     do_sample=False
 )
 
-# === Step 3: Function to extract structured info ===
+# === Step 3: Function to extract structured JSON from free text ===
 def extract_info(text):
-    if not isinstance(text, str):
-        return "{}"
+    if not isinstance(text, str) or text.strip() == "":
+        return json.dumps({})  # empty if no text
 
-    max_chars = 1500  # limit context size
+    # Limit input size (Falcon context ~2k tokens, safe cutoff)
+    max_chars = 1800
     if len(text) > max_chars:
         text = text[:max_chars]
 
+    # Prompt with clear definitions
     prompt = f"""
-From the following medical text, extract the following information and return in JSON format.
-Include short explanations inside each array entry.
+Read the following general medical text and extract information into a JSON format.
 
-Definitions of fields:
-Visit Reason: The main complaint or reason the patient is seeking care.
-Diagnosis: The doctor's conclusion about the patient's condition.
-Past Medical History: Previous illnesses, surgeries, or conditions.
-Clinical Details: Summary of the patient's symptoms, history, and physical findings.
-Vital Signs: Measurements like blood pressure, heart rate, temperature.
-Exam Results: Findings from physical examinations.
-Lab Results: Results of laboratory tests (blood, urine, etc.).
-Imaging Test Results: Findings from X-ray, MRI, CT, etc.
-Hospital and ED course: Summary of treatment during hospital or ER stay.
-Discharge Plan: Instructions given when patient leaves care.
-Full HPI: Detailed history of present illness.
-Full Assessment and Plan: Complete doctor’s assessment and planned treatment.
+Field definitions:
+- "Visit Reason": The reason the patient came for consultation.
+- "Diagnosis": The medical condition(s) diagnosed.
+- "Past Medical History": Relevant history of illnesses, surgeries, allergies.
+- "Clinical Details": Symptoms, progression, examination notes.
+- "Vital Signs": Blood pressure, pulse, temperature, SpO2, etc.
+- "Exam Results": Results of physical examination.
+- "Lab Results": Pathology or blood test results.
+- "Imaging Test Results": X-ray, CT, MRI, ultrasound findings.
+- "Hospital and ED course": Summary of patient’s hospital/ER treatment.
+- "Discharge Plan": Next steps, medications, advice at discharge.
+- "Full HPI": Complete history of present illness in narrative form.
+- "Full Assessment and Plan": Detailed summary and doctor’s plan.
+
+Now extract details from this text and provide output ONLY in valid JSON:
 
 Text:
 {text}
 
-Return JSON in this structure:
-{{
-  "Visit Reason": [],
-  "Diagnosis": [],
-  "Past Medical History": [],
-  "Clinical Details": [],
-  "Vital Signs": [],
-  "Exam Results": [],
-  "Lab Results": [],
-  "Imaging Test Results": [],
-  "Hospital and ED course": [],
-  "Discharge Plan": [],
-  "Full HPI": [],
-  "Full Assessment and Plan": []
-}}
+JSON:
 """
 
     try:
-        result = generator(prompt, max_new_tokens=500)
-        if not result or "generated_text" not in result[0]:
-            return "{}"
+        output = generator(prompt, max_new_tokens=500)[0]['generated_text']
 
-        output = result[0]["generated_text"]
-
-        # Extract JSON part only
+        # Extract only JSON part
         json_start = output.find("{")
         json_end = output.rfind("}") + 1
         if json_start != -1 and json_end != -1:
             parsed = json.loads(output[json_start:json_end])
             return json.dumps(parsed, ensure_ascii=False)
         else:
-            return output
+            return json.dumps({"error": "No valid JSON returned", "raw_output": output})
     except Exception as e:
-        return f"ERROR: {str(e)}"
+        return json.dumps({"error": str(e)})
 
 # === Step 4: Apply with progress bar ===
-tqdm.pandas(desc="Processing rows")
+tqdm.pandas()
 df["falcon_output"] = df["context"].progress_apply(extract_info)
 
-# === Step 5: Save updated CSV ===
+# === Step 5: Save results ===
 df.to_csv(file_path, index=False)
 print(f"Processing complete. Updated file saved: {file_path}")
