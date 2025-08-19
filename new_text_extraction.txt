@@ -66,3 +66,44 @@ df['extracted_json'] = extracted_jsons
 df.to_csv("medical_extracted_emptylist.json.csv", index=False)
 
 print("Extraction completed! JSON output is in 'extracted_json' column with missing fields as empty lists.")
+
+
+
+
+
+
+
+
+
+
+
+def extract_with_prompt(text):
+    prompt = """Extract medical information from the text below.
+For fields that can have multiple items, return a list of short phrases.
+Return all output as valid JSON.
+"""
+
+    # Add field definitions
+    for field, desc in CATEGORY_DEFINITIONS.items():
+        prompt += f"- {field}: {desc}\n"
+
+    prompt += f"\nMedical Record:\n{text}\n\nJSON Output:"
+
+    # Tokenize and generate
+    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=1024)
+    outputs = model.generate(**inputs, max_length=1024)
+    result = tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+    # Parse JSON
+    try:
+        extracted = json.loads(result)
+    except:
+        extracted = {}  # fallback if JSON is invalid
+
+    # Ensure all fields are present; missing fields fixed as empty list
+    for field in CATEGORY_DEFINITIONS.keys():
+        if field not in extracted or extracted[field] is None:
+            extracted[field] = []
+
+    return extracted
+
