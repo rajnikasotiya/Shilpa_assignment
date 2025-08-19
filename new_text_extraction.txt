@@ -28,7 +28,7 @@ CATEGORY_DEFINITIONS = {
     "Full Assessment and Plan": "Full assessment and management plan as text."
 }
 
-# === Function to split text into chunks for long records ===
+# === Split long text into chunks ===
 def split_text(text, max_tokens=800):
     words = text.split()
     chunks = []
@@ -36,7 +36,7 @@ def split_text(text, max_tokens=800):
         chunks.append(" ".join(words[i:i+max_tokens]))
     return chunks
 
-# === Function to extract info from a single chunk ===
+# === Extract info from a single chunk safely ===
 def extract_chunk(text_chunk):
     prompt = """Extract the following fields from the medical record below.
 For fields that can have multiple items, return a list of short phrases.
@@ -51,12 +51,17 @@ Return all output as valid JSON.
     outputs = model.generate(**inputs, max_length=1024)
     result = tokenizer.decode(outputs[0], skip_special_tokens=True)
 
+    # Ensure extracted is a dictionary
     try:
-        return json.loads(result)
+        extracted = json.loads(result)
+        if not isinstance(extracted, dict):
+            extracted = {}
     except:
-        return {}
+        extracted = {}
 
-# === Function to extract from full text (merge chunks) ===
+    return extracted
+
+# === Extract from full text, merging chunks ===
 def extract_with_prompt(text):
     chunks = split_text(text)
     merged = {field: [] for field in CATEGORY_DEFINITIONS.keys()}
@@ -65,6 +70,7 @@ def extract_with_prompt(text):
         extracted = extract_chunk(chunk)
         for field in CATEGORY_DEFINITIONS.keys():
             value = extracted.get(field, [])
+
             # Convert string fields to list if needed
             if isinstance(value, str) and field not in ["Full HPI", "Full Assessment and Plan"]:
                 value = [value] if value.strip() else []
@@ -84,14 +90,14 @@ def extract_with_prompt(text):
     for field in ["Full HPI", "Full Assessment and Plan"]:
         merged[field] = " ".join([v for v in merged[field] if v]).strip()
 
-    # Ensure list fields are empty if nothing found
+    # Ensure all list fields are empty if nothing found
     for field in CATEGORY_DEFINITIONS.keys():
         if merged[field] is None:
             merged[field] = []
 
     return merged
 
-# === Apply extraction to each row ===
+# === Apply extraction to each row in CSV ===
 extracted_jsons = []
 for text in tqdm(df['info']):
     extracted_jsons.append(extract_with_prompt(str(text)))
