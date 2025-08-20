@@ -1,54 +1,74 @@
 import pandas as pd
 import json
+import re
 from transformers import pipeline
 from sentence_transformers import SentenceTransformer, util
+from nltk.corpus import stopwords
+from nltk.tokenize import word_tokenize
 
 # === Load CSV ===
 df = pd.read_csv("results3.csv")
-record_text = str(df.loc[0, "context"])  # take first record only
+record_text = str(df.loc[0, "context"])  # first record only
 
-# === Define fields with definitions ===
-FIELD_DEFINITIONS = {
-    "Visit Reason": "Main complaint or reason why the patient came to the hospital.",
-    "History": "Past medical history, chronic conditions, or relevant background information.",
-    "Diagnosis": "The doctor’s assessment or suspected/confirmed disease.",
-    "Lab Results": "Blood tests or laboratory values with findings.",
-    "Treatment Plan": "Medications, therapies, or planned interventions.",
-    "Clinical Details": "Signs, symptoms, and clinical observations noted during examination.",
-    "Vital Signs": "Objective measurements such as blood pressure, pulse, temperature, SpO2.",
-    "Exam Results": "Findings from physical examination.",
-    "Imaging Test Results": "Findings from imaging such as X-ray, ECG, MRI, CT.",
-    "Hospital and ED course": "Description of what happened during hospitalization or ER stay.",
-    "Discharge Plan": "Follow-up instructions, discharge medications, or next steps.",
-    "Full HPI": "Narrative description of the patient’s history of present illness.",
-    "Full Assessment and Plan": "Complete summary of assessment and treatment plan."
-}
-
-FIELDS = list(FIELD_DEFINITIONS.keys())
+# === Define fields to extract ===
+FIELDS = [
+    "Visit Reason",
+    "History",
+    "Diagnosis",
+    "Lab Results",
+    "Treatment Plan",
+    "Clinical Details",
+    "Vital Signs",
+    "Exam Results",
+    "Imaging Test Results",
+    "Hospital and ED course",
+    "Discharge Plan",
+    "Full HPI",
+    "Full Assessment and Plan"
+]
 
 # === Load models ===
 extractor = pipeline("text2text-generation", model="google/flan-t5-base")
 embedder = SentenceTransformer("all-MiniLM-L6-v2")
 
-# === Build prompt with definitions ===
-prompt = (
-    "Extract the following fields from the medical record and return in JSON format.\n"
-    "If a field is not explicitly mentioned, extract the most relevant phrase(s) from the text instead.\n"
-    "Return each field as a list of short phrases.\n\n"
-    "Fields to extract with definitions:\n"
-)
+# === Stopwords for cleaning ===
+stop_words = set(stopwords.words("english"))
 
-for field, definition in FIELD_DEFINITIONS.items():
-    prompt += f"- {field}: {definition}\n"
+def clean_keywords(text):
+    """Extract short medical keywords from a sentence."""
+    tokens = word_tokenize(text)
+    tokens = [t for t in tokens if t.isalpha() and t.lower() not in stop_words]
+    # Keep 1–3 word chunks
+    keywords = []
+    for i in range(len(tokens)):
+        # single word
+        keywords.append(tokens[i])
+        # two-word phrase
+        if i < len(tokens) - 1:
+            keywords.append(tokens[i] + " " + tokens[i+1])
+        # three-word phrase
+        if i < len(tokens) - 2:
+            keywords.append(tokens[i] + " " + tokens[i+1] + " " + tokens[i+2])
+    # Deduplicate and keep medical-looking words
+    keywords = list(dict.fromkeys([k.lower() for k in keywords if len(k) > 2]))
+    return keywords[:5]  # limit per field
 
-prompt += f"\nMedical Record:\n{record_text}\n"
+# === Prompt for structured extraction ===
+prompt = f"""
+Extract the following fields from the medical record and return in JSON format.
+Return each field as a list of the most relevant keywords or short medical terms (not full sentences).
+For example, use terms like 'chest pain', 'shortness of breath', 'hypertension', 'diabetes', 
+'ST-T changes', 'metformin 500mg' etc. Avoid generic words.
+
+Fields to extract:
+{", ".join(FIELDS)}
+
+Medical Record:
+{record_text}
+"""
 
 # === Run model ===
-response = extractor(
-    prompt,
-    max_length=1024,
-    clean_up_tokenization_spaces=True
-)[0]['generated_text']
+response = extractor(prompt, max_length=1024, clean_up_tokenization_spaces=True)[0]['generated_text']
 
 # === Try to parse JSON ===
 try:
@@ -62,11 +82,12 @@ sentence_embeddings = embedder.encode(sentences, convert_to_tensor=True)
 
 for field in FIELDS:
     value = structured_data.get(field, [])
-    if not value or value == "" or (isinstance(value, list) and len(value) == 0):
+    if not value or value == "":
         field_embedding = embedder.encode(field, convert_to_tensor=True)
         similarity_scores = util.cos_sim(field_embedding, sentence_embeddings)[0]
         best_idx = int(similarity_scores.argmax())
-        structured_data[field] = [sentences[best_idx].strip()]
+        best_sentence = sentences[best_idx].strip()
+        structured_data[field] = clean_keywords(best_sentence)
 
 # === Final Output ===
 print(json.dumps(structured_data, indent=2))
