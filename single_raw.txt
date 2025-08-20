@@ -1,0 +1,101 @@
+import pandas as pd
+import json
+from transformers import pipeline
+
+# === Step 1: Load CSV ===
+file_path = "results.csv"
+df = pd.read_csv(file_path)
+
+# Take only the first record for demo
+sample_text = df.loc[0, "context"]
+
+# === Step 2: Load Falcon model ===
+generator = pipeline(
+    "text-generation",
+    model="tiiuae/falcon-7b-instruct",
+    torch_dtype="auto",
+    device_map="auto",
+    do_sample=False
+)
+
+# === Step 3: Chunking function (to avoid token limit issues) ===
+def chunk_text(text, max_len=1500):
+    return [text[i:i+max_len] for i in range(0, len(text), max_len)]
+
+# === Step 4: Extraction function ===
+def extract_info(text):
+    chunks = chunk_text(text)
+
+    merged_result = {
+        "Visit Reason": [],
+        "Diagnosis": [],
+        "Past Medical History": [],
+        "Clinical Details": [],
+        "Vital Signs": [],
+        "Exam Results": [],
+        "Lab Results": [],
+        "Imaging Test Results": [],
+        "Hospital and ED course": [],
+        "Discharge Plan": [],
+        "Full HPI": [],
+        "Full Assessment and Plan": []
+    }
+
+    for chunk in chunks:
+        prompt = f"""
+You are a medical information extractor. 
+From the following text, extract structured information and return it strictly as valid JSON.
+Do NOT fabricate. For each category, return keywords or sentences that best match from the text. 
+If the information is not explicitly mentioned, choose the closest relevant text instead of leaving it blank.
+
+Categories:
+- Visit Reason: Why the patient came (symptoms, complaints).
+- Diagnosis: Any final or provisional diagnosis.
+- Past Medical History: Old illnesses, surgeries, conditions.
+- Clinical Details: History of present illness, symptoms, onset, duration.
+- Vital Signs: BP, HR, Temp, etc.
+- Exam Results: Physical examination findings.
+- Lab Results: Blood/urine test results.
+- Imaging Test Results: X-ray, MRI, CT, USG findings.
+- Hospital and ED course: What happened during stay/admission.
+- Discharge Plan: Treatment plan, medications, advice.
+- Full HPI: Full history of present illness in narrative form.
+- Full Assessment and Plan: Doctor’s assessment and management plan.
+
+Text: {chunk}
+
+Return only valid JSON with these exact keys.
+        """
+
+        try:
+            output = generator(prompt, max_new_tokens=600)[0]['generated_text']
+
+            # Extract JSON part
+            json_start = output.find("{")
+            json_end = output.rfind("}") + 1
+            if json_start != -1 and json_end != -1:
+                parsed = json.loads(output[json_start:json_end])
+
+                # Merge into final result
+                for key in merged_result.keys():
+                    val = parsed.get(key, "")
+                    if val and val not in merged_result[key]:
+                        merged_result[key].append(val)
+
+        except Exception as e:
+            return {"error": str(e)}
+
+    # Convert lists into clean strings
+    for key in merged_result.keys():
+        if not merged_result[key]:
+            merged_result[key] = ""
+        else:
+            merged_result[key] = " ".join(merged_result[key])
+
+    return merged_result
+
+
+# === Step 5: Run on single record ===
+result = extract_info(sample_text)
+
+print(json.dumps(result, indent=2, ensure_ascii=False))
