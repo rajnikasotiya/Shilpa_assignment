@@ -12,7 +12,7 @@ generator = pipeline(
     "text-generation",
     model="tiiuae/falcon-7b-instruct",
     torch_dtype="auto",
-    device_map="auto",
+    device_map="auto",#set gpu
     do_sample=False
 )
 
@@ -50,8 +50,8 @@ Instead:
 - Always fill all categories with real extracted text (never "Not mentioned" or placeholders).
 
 Categories:
-- Visit Reason: Why the patient came (symptoms, complaints).
-- Diagnosis: Any final or provisional diagnosis.
+- Visit Reason: Why the patient came (symptoms, complaints like fever, headache).
+- Diagnosis: Any final or provisional diagnosis like chief compalint, bronchiolitis,high anion.
 - Past Medical History: Old illnesses, surgeries, conditions.
 - Clinical Details: History of present illness, symptoms, onset, duration.
 - Vital Signs: BP, HR, Temp, etc.
