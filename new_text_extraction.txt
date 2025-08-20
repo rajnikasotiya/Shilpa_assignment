@@ -2,33 +2,66 @@ from transformers import pipeline
 import pandas as pd
 import json
 
-# === Load CSV and get first row of 'context' column ===
+# === Load CSV ===
 df = pd.read_csv("results3.csv")
-record_text = str(df.loc[0, "context"])  # take first row as string
 
-# === Load a text-generation model ===
+# === Load model ===
 extractor = pipeline("text2text-generation", model="google/flan-t5-base")
 
-# === Prompt for structured extraction ===
-prompt = f"""
-Extract the following fields from the medical record and return in JSON format:
-- Visit Reason
-- History
-- Diagnosis
-- Lab Results
-- Treatment Plan
+# === Define fields ===
+FIELDS = [
+    "Visit Reason",
+    "History",
+    "Diagnosis",
+    "Lab Results",
+    "Treatment Plan",
+    "Clinical Details",
+    "Vital Signs",
+    "Exam Results",
+    "Imaging Test Results",
+    "Hospital and ED course",
+    "Discharge Plan",
+    "Full HPI",
+    "Full Assessment and Plan"
+]
 
-Medical Record:
-{record_text}
-"""
+# === Function to extract structured info ===
+def extract_from_context(context_text):
+    prompt = f"""
+    Extract the following fields from the medical record.
+    For each field return a JSON array (list of short phrases).
+    If no relevant info is found, return an empty list [].
 
-# === Run model ===
-response = extractor(prompt, max_length=512, clean_up_tokenization_spaces=True)[0]['generated_text']
+    Fields:
+    {", ".join(FIELDS)}
 
-# === Parse JSON output if possible ===
-try:
-    structured_data = json.loads(response)
-except:
-    structured_data = {"raw_output": response}  # fallback if not valid JSON
+    Medical Record:
+    {context_text}
 
-print(structured_data)
+    JSON Output:
+    """
+
+    response = extractor(prompt, max_length=512, clean_up_tokenization_spaces=True)[0]['generated_text']
+
+    # Try parsing JSON, else fallback
+    try:
+        extracted = json.loads(response)
+    except:
+        # fallback: return empty lists for all fields
+        extracted = {field: [] for field in FIELDS}
+
+    # Ensure all fields are present
+    for field in FIELDS:
+        if field not in extracted or not isinstance(extracted[field], list):
+            extracted[field] = []
+    return extracted
+
+# === Apply on all rows ===
+results = []
+for i, row in df.iterrows():
+    context_text = str(row["context"])
+    structured = extract_from_context(context_text)
+    results.append(structured)
+
+# === Show results for first record ===
+print(json.dumps(results[0], indent=2))
