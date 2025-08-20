@@ -1,59 +1,72 @@
 import pandas as pd
 import json
 from transformers import pipeline
+from sentence_transformers import SentenceTransformer, util
 
 # === Load CSV ===
 df = pd.read_csv("results3.csv")
-record_text = str(df.loc[0, "context"])  # first record, context column
+record_text = str(df.loc[0, "context"])  # take first record only
 
-# === Load model ===
+# === Define fields with definitions ===
+FIELD_DEFINITIONS = {
+    "Visit Reason": "Main complaint or reason why the patient came to the hospital.",
+    "History": "Past medical history, chronic conditions, or relevant background information.",
+    "Diagnosis": "The doctor’s assessment or suspected/confirmed disease.",
+    "Lab Results": "Blood tests or laboratory values with findings.",
+    "Treatment Plan": "Medications, therapies, or planned interventions.",
+    "Clinical Details": "Signs, symptoms, and clinical observations noted during examination.",
+    "Vital Signs": "Objective measurements such as blood pressure, pulse, temperature, SpO2.",
+    "Exam Results": "Findings from physical examination.",
+    "Imaging Test Results": "Findings from imaging such as X-ray, ECG, MRI, CT.",
+    "Hospital and ED course": "Description of what happened during hospitalization or ER stay.",
+    "Discharge Plan": "Follow-up instructions, discharge medications, or next steps.",
+    "Full HPI": "Narrative description of the patient’s history of present illness.",
+    "Full Assessment and Plan": "Complete summary of assessment and treatment plan."
+}
+
+FIELDS = list(FIELD_DEFINITIONS.keys())
+
+# === Load models ===
 extractor = pipeline("text2text-generation", model="google/flan-t5-base")
+embedder = SentenceTransformer("all-MiniLM-L6-v2")
 
-# === Updated Prompt ===
-prompt = f"""
-You are an information extraction system.
-Extract the following fields from the medical record below and return the result strictly as valid JSON.
-Rules:
-- Each field must be a JSON array (list).
-- Use short, concise phrases only (e.g., "chest pain", "shortness of breath").
-- If a field is not explicitly mentioned, fill it with the most relevant information from the record that fits the category.
-- Never leave a field as an empty list.
-- Do not invent information outside of the medical record.
-- Do not include explanatory sentences, only items.
+# === Build prompt with definitions ===
+prompt = (
+    "Extract the following fields from the medical record and return in JSON format.\n"
+    "If a field is not explicitly mentioned, extract the most relevant phrase(s) from the text instead.\n"
+    "Return each field as a list of short phrases.\n\n"
+    "Fields to extract with definitions:\n"
+)
 
-Fields to extract:
-- Visit Reason
-- History
-- Diagnosis
-- Lab Results
-- Treatment Plan
-- Clinical Details
-- Vital Signs
-- Exam Results
-- Imaging Test Results
-- Hospital and ED course
-- Discharge Plan
-- Full HPI
-- Full Assessment and Plan
+for field, definition in FIELD_DEFINITIONS.items():
+    prompt += f"- {field}: {definition}\n"
 
-Medical Record:
-{record_text}
+prompt += f"\nMedical Record:\n{record_text}\n"
 
-Return JSON only:
-"""
-
-# === Run extraction ===
+# === Run model ===
 response = extractor(
     prompt,
-    max_length=512,
+    max_length=1024,
     clean_up_tokenization_spaces=True
 )[0]['generated_text']
 
-# === Try parsing JSON ===
+# === Try to parse JSON ===
 try:
     structured_data = json.loads(response)
 except:
-    structured_data = {"raw_output": response}
+    structured_data = {field: [] for field in FIELDS}  # fallback empty dict
 
-# === Print structured JSON ===
+# === Cosine similarity fallback for missing fields ===
+sentences = record_text.split(". ")
+sentence_embeddings = embedder.encode(sentences, convert_to_tensor=True)
+
+for field in FIELDS:
+    value = structured_data.get(field, [])
+    if not value or value == "" or (isinstance(value, list) and len(value) == 0):
+        field_embedding = embedder.encode(field, convert_to_tensor=True)
+        similarity_scores = util.cos_sim(field_embedding, sentence_embeddings)[0]
+        best_idx = int(similarity_scores.argmax())
+        structured_data[field] = [sentences[best_idx].strip()]
+
+# === Final Output ===
 print(json.dumps(structured_data, indent=2))
