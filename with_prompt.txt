@@ -17,7 +17,7 @@ generator = pipeline(
 )
 
 # === Step 3: Chunking function (for long text) ===
-def chunk_text(text, max_len=1500):
+def chunk_text(text, max_len=2000):
     return [text[i:i+max_len] for i in range(0, len(text), max_len)]
 
 # === Step 4: Extraction function ===
@@ -108,4 +108,4 @@ df["falcon_output"] = results
 
 # === Step 6: Save results ===
 df.to_csv(file_path, index=False)
-print(f"✅ Processing complete. Updated file saved: {file_path}")
+print(f"Processing complete. Updated file saved: {file_path}")
