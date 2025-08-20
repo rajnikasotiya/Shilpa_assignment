@@ -1,101 +1,66 @@
 import pandas as pd
 import json
 from transformers import pipeline
+from sentence_transformers import SentenceTransformer, util
 
-# === Step 1: Load CSV ===
-file_path = "results.csv"
-df = pd.read_csv(file_path)
+# === Load CSV ===
+df = pd.read_csv("results3.csv")
+record_text = str(df.loc[0, "context"])  # take first record only
 
-# Take only the first record for demo
-sample_text = df.loc[0, "context"]
+# === Define fields to extract ===
+FIELDS = [
+    "Visit Reason",
+    "History",
+    "Diagnosis",
+    "Lab Results",
+    "Treatment Plan",
+    "Clinical Details",
+    "Vital Signs",
+    "Exam Results",
+    "Imaging Test Results",
+    "Hospital and ED course",
+    "Discharge Plan",
+    "Full HPI",
+    "Full Assessment and Plan"
+]
 
-# === Step 2: Load Falcon model ===
-generator = pipeline(
-    "text-generation",
-    model="tiiuae/falcon-7b-instruct",
-    torch_dtype="auto",
-    device_map="auto",
-    do_sample=False
-)
+# === Load models ===
+extractor = pipeline("text2text-generation", model="google/flan-t5-base")
+embedder = SentenceTransformer("all-MiniLM-L6-v2")
 
-# === Step 3: Chunking function (to avoid token limit issues) ===
-def chunk_text(text, max_len=1500):
-    return [text[i:i+max_len] for i in range(0, len(text), max_len)]
+# === Prompt for structured extraction ===
+prompt = f"""
+Extract the following fields from the medical record and return in JSON format.
+If a field is not explicitly mentioned, extract the most relevant phrase(s) from the text instead.
+Return each field as a list of short phrases.
 
-# === Step 4: Extraction function ===
-def extract_info(text):
-    chunks = chunk_text(text)
+Fields to extract:
+{", ".join(FIELDS)}
 
-    merged_result = {
-        "Visit Reason": [],
-        "Diagnosis": [],
-        "Past Medical History": [],
-        "Clinical Details": [],
-        "Vital Signs": [],
-        "Exam Results": [],
-        "Lab Results": [],
-        "Imaging Test Results": [],
-        "Hospital and ED course": [],
-        "Discharge Plan": [],
-        "Full HPI": [],
-        "Full Assessment and Plan": []
-    }
+Medical Record:
+{record_text}
+"""
 
-    for chunk in chunks:
-        prompt = f"""
-You are a medical information extractor. 
-From the following text, extract structured information and return it strictly as valid JSON.
-Do NOT fabricate. For each category, return keywords or sentences that best match from the text. 
-If the information is not explicitly mentioned, choose the closest relevant text instead of leaving it blank.
+# === Run model ===
+response = extractor(prompt, max_length=1024, clean_up_tokenization_spaces=True)[0]['generated_text']
 
-Categories:
-- Visit Reason: Why the patient came (symptoms, complaints).
-- Diagnosis: Any final or provisional diagnosis.
-- Past Medical History: Old illnesses, surgeries, conditions.
-- Clinical Details: History of present illness, symptoms, onset, duration.
-- Vital Signs: BP, HR, Temp, etc.
-- Exam Results: Physical examination findings.
-- Lab Results: Blood/urine test results.
-- Imaging Test Results: X-ray, MRI, CT, USG findings.
-- Hospital and ED course: What happened during stay/admission.
-- Discharge Plan: Treatment plan, medications, advice.
-- Full HPI: Full history of present illness in narrative form.
-- Full Assessment and Plan: Doctor’s assessment and management plan.
+# === Try to parse JSON ===
+try:
+    structured_data = json.loads(response)
+except:
+    structured_data = {field: [] for field in FIELDS}  # fallback empty dict
 
-Text: {chunk}
+# === Cosine similarity fallback for missing fields ===
+sentences = record_text.split(". ")
+sentence_embeddings = embedder.encode(sentences, convert_to_tensor=True)
 
-Return only valid JSON with these exact keys.
-        """
+for field in FIELDS:
+    value = structured_data.get(field, [])
+    if not value or value == "":
+        field_embedding = embedder.encode(field, convert_to_tensor=True)
+        similarity_scores = util.cos_sim(field_embedding, sentence_embeddings)[0]
+        best_idx = int(similarity_scores.argmax())
+        structured_data[field] = [sentences[best_idx].strip()]
 
-        try:
-            output = generator(prompt, max_new_tokens=600)[0]['generated_text']
-
-            # Extract JSON part
-            json_start = output.find("{")
-            json_end = output.rfind("}") + 1
-            if json_start != -1 and json_end != -1:
-                parsed = json.loads(output[json_start:json_end])
-
-                # Merge into final result
-                for key in merged_result.keys():
-                    val = parsed.get(key, "")
-                    if val and val not in merged_result[key]:
-                        merged_result[key].append(val)
-
-        except Exception as e:
-            return {"error": str(e)}
-
-    # Convert lists into clean strings
-    for key in merged_result.keys():
-        if not merged_result[key]:
-            merged_result[key] = ""
-        else:
-            merged_result[key] = " ".join(merged_result[key])
-
-    return merged_result
-
-
-# === Step 5: Run on single record ===
-result = extract_info(sample_text)
-
-print(json.dumps(result, indent=2, ensure_ascii=False))
+# === Final Output ===
+print(json.dumps(structured_data, indent=2))
