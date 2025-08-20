@@ -1,66 +1,59 @@
 import pandas as pd
 import json
 from transformers import pipeline
-from sentence_transformers import SentenceTransformer, util
 
 # === Load CSV ===
 df = pd.read_csv("results3.csv")
-record_text = str(df.loc[0, "context"])  # take first record only
+record_text = str(df.loc[0, "context"])  # first record, context column
 
-# === Define fields to extract ===
-FIELDS = [
-    "Visit Reason",
-    "History",
-    "Diagnosis",
-    "Lab Results",
-    "Treatment Plan",
-    "Clinical Details",
-    "Vital Signs",
-    "Exam Results",
-    "Imaging Test Results",
-    "Hospital and ED course",
-    "Discharge Plan",
-    "Full HPI",
-    "Full Assessment and Plan"
-]
-
-# === Load models ===
+# === Load model ===
 extractor = pipeline("text2text-generation", model="google/flan-t5-base")
-embedder = SentenceTransformer("all-MiniLM-L6-v2")
 
-# === Prompt for structured extraction ===
+# === Updated Prompt ===
 prompt = f"""
-Extract the following fields from the medical record and return in JSON format.
-If a field is not explicitly mentioned, extract the most relevant phrase(s) from the text instead.
-Return each field as a list of short phrases.
+You are an information extraction system.
+Extract the following fields from the medical record below and return the result strictly as valid JSON.
+Rules:
+- Each field must be a JSON array (list).
+- Use short, concise phrases only (e.g., "chest pain", "shortness of breath").
+- If a field is not explicitly mentioned, fill it with the most relevant information from the record that fits the category.
+- Never leave a field as an empty list.
+- Do not invent information outside of the medical record.
+- Do not include explanatory sentences, only items.
 
 Fields to extract:
-{", ".join(FIELDS)}
+- Visit Reason
+- History
+- Diagnosis
+- Lab Results
+- Treatment Plan
+- Clinical Details
+- Vital Signs
+- Exam Results
+- Imaging Test Results
+- Hospital and ED course
+- Discharge Plan
+- Full HPI
+- Full Assessment and Plan
 
 Medical Record:
 {record_text}
+
+Return JSON only:
 """
 
-# === Run model ===
-response = extractor(prompt, max_length=1024, clean_up_tokenization_spaces=True)[0]['generated_text']
+# === Run extraction ===
+response = extractor(
+    prompt,
+    max_length=512,
+    clean_up_tokenization_spaces=True
+)[0]['generated_text']
 
-# === Try to parse JSON ===
+# === Try parsing JSON ===
 try:
     structured_data = json.loads(response)
 except:
-    structured_data = {field: [] for field in FIELDS}  # fallback empty dict
+    structured_data = {"raw_output": response}
 
-# === Cosine similarity fallback for missing fields ===
-sentences = record_text.split(". ")
-sentence_embeddings = embedder.encode(sentences, convert_to_tensor=True)
-
-for field in FIELDS:
-    value = structured_data.get(field, [])
-    if not value or value == "":
-        field_embedding = embedder.encode(field, convert_to_tensor=True)
-        similarity_scores = util.cos_sim(field_embedding, sentence_embeddings)[0]
-        best_idx = int(similarity_scores.argmax())
-        structured_data[field] = [sentences[best_idx].strip()]
-
-# === Final Output ===
+# === Print structured JSON ===
 print(json.dumps(structured_data, indent=2))
