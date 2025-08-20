@@ -1,110 +1,123 @@
-import pandas as pd
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+import re
 import json
-from tqdm import tqdm
+import pandas as pd
+from transformers import pipeline
 
 # === Load CSV ===
-df = pd.read_csv("medical.csv")  # assumes 'info' column exists
+file_path = "results.csv"
+df = pd.read_csv(file_path)
 
-# === Load model ===
-model_name = "google/flan-t5-large"
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+# === Load Falcon Model ===
+generator = pipeline(
+    "text-generation",
+    model="tiiuae/falcon-7b-instruct",
+    torch_dtype="auto",
+    device_map="auto",
+    do_sample=False
+)
 
-# === Define fields with concise instructions ===
-CATEGORY_DEFINITIONS = {
-    "Visit Reason": "List symptoms or complaints. Return as list of short phrases.",
-    "History": "List relevant past medical history. Return as list of short phrases.",
-    "Diagnosis": "List diagnoses. Return as list of short phrases.",
-    "Lab Results": "List lab findings. Return as list of short phrases.",
-    "Treatment Plan": "List treatments, medications, procedures. Return as list of short phrases.",
-    "Clinical Details": "Other clinical observations. Return as list of short phrases.",
-    "Vital Signs": "Patient's vital signs as concise key-value phrases.",
-    "Exam Results": "Physical exam findings as short phrases.",
-    "Imaging Test Results": "Key imaging findings as phrases.",
-    "Hospital and ED course": "Hospital/ED events as short phrases.",
-    "Discharge Plan": "Follow-up instructions or steps as phrases.",
-    "Full HPI": "Full History of Present Illness as detailed text.",
-    "Full Assessment and Plan": "Full assessment and management plan as text."
-}
+# === Chunking function ===
+def chunk_text(text, max_len=1500):
+    return [text[i:i+max_len] for i in range(0, len(text), max_len)]
 
-# === Split long text into chunks ===
-def split_text(text, max_tokens=800):
-    words = text.split()
-    chunks = []
-    for i in range(0, len(words), max_tokens):
-        chunks.append(" ".join(words[i:i+max_tokens]))
-    return chunks
+# === Simple regex-based backup extractor ===
+def regex_extract(text):
+    extracted = {
+        "Visit Reason": re.findall(r"(reason|complaint|presenting with.*?)[\.\n]", text, flags=re.I),
+        "Diagnosis": re.findall(r"(diagnosis|impression.*?)[\.\n]", text, flags=re.I),
+        "Past Medical History": re.findall(r"(history of.*?)[\.\n]", text, flags=re.I),
+        "Clinical Details": re.findall(r"(symptoms|duration|onset.*?)[\.\n]", text, flags=re.I),
+        "Vital Signs": re.findall(r"(BP|blood pressure|HR|pulse|temperature.*?)[\.\n]", text, flags=re.I),
+        "Exam Results": re.findall(r"(exam|examination.*?)[\.\n]", text, flags=re.I),
+        "Lab Results": re.findall(r"(blood test|lab|urine.*?)[\.\n]", text, flags=re.I),
+        "Imaging Test Results": re.findall(r"(x-ray|MRI|CT|ultrasound.*?)[\.\n]", text, flags=re.I),
+        "Hospital and ED course": re.findall(r"(hospital course|ED course.*?)[\.\n]", text, flags=re.I),
+        "Discharge Plan": re.findall(r"(plan|discharge.*?)[\.\n]", text, flags=re.I),
+        "Full HPI": re.findall(r"(history of present illness.*?)[\.\n]", text, flags=re.I),
+        "Full Assessment and Plan": re.findall(r"(assessment|plan.*?)[\.\n]", text, flags=re.I),
+    }
 
-# === Extract info from a single chunk safely ===
-def extract_chunk(text_chunk):
-    prompt = """Extract the following fields from the medical record below.
-For fields that can have multiple items, return a list of short phrases.
-If a field is not explicitly mentioned, infer the most relevant information from the text.
-Return all output as valid JSON.
-"""
-    for field, desc in CATEGORY_DEFINITIONS.items():
-        prompt += f"- {field}: {desc}\n"
-    prompt += f"\nMedical Record:\n{text_chunk}\n\nJSON Output:"
-
-    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=1024)
-    outputs = model.generate(**inputs, max_length=1024)
-    result = tokenizer.decode(outputs[0], skip_special_tokens=True)
-
-    # Ensure extracted is a dictionary
-    try:
-        extracted = json.loads(result)
-        if not isinstance(extracted, dict):
-            extracted = {}
-    except:
-        extracted = {}
-
+    # Clean up → pick best match or empty string
+    for key in extracted:
+        extracted[key] = extracted[key][0] if extracted[key] else ""
     return extracted
 
-# === Extract from full text, merging chunks ===
-def extract_with_prompt(text):
-    chunks = split_text(text)
-    merged = {field: [] for field in CATEGORY_DEFINITIONS.keys()}
+# === Hybrid extraction (Falcon + Regex fallback) ===
+def extract_info(text):
+    chunks = chunk_text(text)
+
+    merged_result = {
+        "Visit Reason": [],
+        "Diagnosis": [],
+        "Past Medical History": [],
+        "Clinical Details": [],
+        "Vital Signs": [],
+        "Exam Results": [],
+        "Lab Results": [],
+        "Imaging Test Results": [],
+        "Hospital and ED course": [],
+        "Discharge Plan": [],
+        "Full HPI": [],
+        "Full Assessment and Plan": []
+    }
 
     for chunk in chunks:
-        extracted = extract_chunk(chunk)
-        for field in CATEGORY_DEFINITIONS.keys():
-            value = extracted.get(field, [])
+        prompt = f"""
+You are a medical information extractor.
+From the following text, extract structured information and return it strictly as valid JSON.
+Do NOT fabricate. For each category, return the most relevant sentences or keywords from the text.
 
-            # Convert string fields to list if needed
-            if isinstance(value, str) and field not in ["Full HPI", "Full Assessment and Plan"]:
-                value = [value] if value.strip() else []
-            elif value is None:
-                value = []
-            elif not isinstance(value, list) and field not in ["Full HPI", "Full Assessment and Plan"]:
-                value = [str(value)]
+Categories:
+{list(merged_result.keys())}
 
-            if field in ["Full HPI", "Full Assessment and Plan"]:
-                if isinstance(value, list):
-                    value = " ".join(value)
-                merged[field] += [value] if value else []
+Text: {chunk}
+
+Return only valid JSON with these exact keys.
+        """
+
+        try:
+            output = generator(prompt, max_new_tokens=600)[0]['generated_text']
+            print("=== Raw Falcon Output ===")
+            print(output)
+
+            # Try parsing JSON
+            json_start = output.find("{")
+            json_end = output.rfind("}") + 1
+            parsed = {}
+            if json_start != -1 and json_end != -1:
+                parsed = json.loads(output[json_start:json_end])
+
+            # Merge Falcon result
+            if parsed:
+                for key in merged_result.keys():
+                    val = parsed.get(key, "")
+                    if val and val not in merged_result[key]:
+                        merged_result[key].append(val)
             else:
-                merged[field] += value
+                print("No valid JSON found, falling back to regex...")
+                regex_data = regex_extract(chunk)
+                for key in merged_result.keys():
+                    if regex_data[key]:
+                        merged_result[key].append(regex_data[key])
 
-    # Post-process text fields
-    for field in ["Full HPI", "Full Assessment and Plan"]:
-        merged[field] = " ".join([v for v in merged[field] if v]).strip()
+        except Exception as e:
+            print(f"Error with Falcon, using regex fallback: {e}")
+            regex_data = regex_extract(chunk)
+            for key in merged_result.keys():
+                if regex_data[key]:
+                    merged_result[key].append(regex_data[key])
 
-    # Ensure all list fields are empty if nothing found
-    for field in CATEGORY_DEFINITIONS.keys():
-        if merged[field] is None:
-            merged[field] = []
+    # Post-process
+    for key in merged_result.keys():
+        if not merged_result[key]:
+            merged_result[key] = ""
+        else:
+            merged_result[key] = " ".join(merged_result[key])
 
-    return merged
+    return merged_result
 
-# === Apply extraction to each row in CSV ===
-extracted_jsons = []
-for text in tqdm(df['info']):
-    extracted_jsons.append(extract_with_prompt(str(text)))
-
-df['extracted_json'] = extracted_jsons
-
-# === Save to CSV ===
-df.to_csv("medical_extracted_final.json.csv", index=False)
-
-print("Extraction completed! JSON output is in 'extracted_json' column with all fields inferred from input text.")
+# === Run on single record for testing ===
+sample_text = df.loc[0, "context"]  # pick first row
+result = extract_info(sample_text)
+print("\nFinal Extracted JSON:")
+print(json.dumps(result, indent=2, ensure_ascii=False))
