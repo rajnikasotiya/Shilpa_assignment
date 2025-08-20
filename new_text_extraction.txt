@@ -1,123 +1,34 @@
-import re
-import json
-import pandas as pd
 from transformers import pipeline
+import pandas as pd
+import json
 
-# === Load CSV ===
-file_path = "results.csv"
-df = pd.read_csv(file_path)
+# === Load CSV and get first row of 'context' column ===
+df = pd.read_csv("results3.csv")
+record_text = str(df.loc[0, "context"])  # take first row as string
 
-# === Load Falcon Model ===
-generator = pipeline(
-    "text-generation",
-    model="tiiuae/falcon-7b-instruct",
-    torch_dtype="auto",
-    device_map="auto",
-    do_sample=False
-)
+# === Load a text-generation model ===
+extractor = pipeline("text2text-generation", model="google/flan-t5-base")
 
-# === Chunking function ===
-def chunk_text(text, max_len=1500):
-    return [text[i:i+max_len] for i in range(0, len(text), max_len)]
+# === Prompt for structured extraction ===
+prompt = f"""
+Extract the following fields from the medical record and return in JSON format:
+- Visit Reason
+- History
+- Diagnosis
+- Lab Results
+- Treatment Plan
 
-# === Simple regex-based backup extractor ===
-def regex_extract(text):
-    extracted = {
-        "Visit Reason": re.findall(r"(reason|complaint|presenting with.*?)[\.\n]", text, flags=re.I),
-        "Diagnosis": re.findall(r"(diagnosis|impression.*?)[\.\n]", text, flags=re.I),
-        "Past Medical History": re.findall(r"(history of.*?)[\.\n]", text, flags=re.I),
-        "Clinical Details": re.findall(r"(symptoms|duration|onset.*?)[\.\n]", text, flags=re.I),
-        "Vital Signs": re.findall(r"(BP|blood pressure|HR|pulse|temperature.*?)[\.\n]", text, flags=re.I),
-        "Exam Results": re.findall(r"(exam|examination.*?)[\.\n]", text, flags=re.I),
-        "Lab Results": re.findall(r"(blood test|lab|urine.*?)[\.\n]", text, flags=re.I),
-        "Imaging Test Results": re.findall(r"(x-ray|MRI|CT|ultrasound.*?)[\.\n]", text, flags=re.I),
-        "Hospital and ED course": re.findall(r"(hospital course|ED course.*?)[\.\n]", text, flags=re.I),
-        "Discharge Plan": re.findall(r"(plan|discharge.*?)[\.\n]", text, flags=re.I),
-        "Full HPI": re.findall(r"(history of present illness.*?)[\.\n]", text, flags=re.I),
-        "Full Assessment and Plan": re.findall(r"(assessment|plan.*?)[\.\n]", text, flags=re.I),
-    }
+Medical Record:
+{record_text}
+"""
 
-    # Clean up → pick best match or empty string
-    for key in extracted:
-        extracted[key] = extracted[key][0] if extracted[key] else ""
-    return extracted
+# === Run model ===
+response = extractor(prompt, max_length=512, clean_up_tokenization_spaces=True)[0]['generated_text']
 
-# === Hybrid extraction (Falcon + Regex fallback) ===
-def extract_info(text):
-    chunks = chunk_text(text)
+# === Parse JSON output if possible ===
+try:
+    structured_data = json.loads(response)
+except:
+    structured_data = {"raw_output": response}  # fallback if not valid JSON
 
-    merged_result = {
-        "Visit Reason": [],
-        "Diagnosis": [],
-        "Past Medical History": [],
-        "Clinical Details": [],
-        "Vital Signs": [],
-        "Exam Results": [],
-        "Lab Results": [],
-        "Imaging Test Results": [],
-        "Hospital and ED course": [],
-        "Discharge Plan": [],
-        "Full HPI": [],
-        "Full Assessment and Plan": []
-    }
-
-    for chunk in chunks:
-        prompt = f"""
-You are a medical information extractor.
-From the following text, extract structured information and return it strictly as valid JSON.
-Do NOT fabricate. For each category, return the most relevant sentences or keywords from the text.
-
-Categories:
-{list(merged_result.keys())}
-
-Text: {chunk}
-
-Return only valid JSON with these exact keys.
-        """
-
-        try:
-            output = generator(prompt, max_new_tokens=600)[0]['generated_text']
-            print("=== Raw Falcon Output ===")
-            print(output)
-
-            # Try parsing JSON
-            json_start = output.find("{")
-            json_end = output.rfind("}") + 1
-            parsed = {}
-            if json_start != -1 and json_end != -1:
-                parsed = json.loads(output[json_start:json_end])
-
-            # Merge Falcon result
-            if parsed:
-                for key in merged_result.keys():
-                    val = parsed.get(key, "")
-                    if val and val not in merged_result[key]:
-                        merged_result[key].append(val)
-            else:
-                print("No valid JSON found, falling back to regex...")
-                regex_data = regex_extract(chunk)
-                for key in merged_result.keys():
-                    if regex_data[key]:
-                        merged_result[key].append(regex_data[key])
-
-        except Exception as e:
-            print(f"Error with Falcon, using regex fallback: {e}")
-            regex_data = regex_extract(chunk)
-            for key in merged_result.keys():
-                if regex_data[key]:
-                    merged_result[key].append(regex_data[key])
-
-    # Post-process
-    for key in merged_result.keys():
-        if not merged_result[key]:
-            merged_result[key] = ""
-        else:
-            merged_result[key] = " ".join(merged_result[key])
-
-    return merged_result
-
-# === Run on single record for testing ===
-sample_text = df.loc[0, "context"]  # pick first row
-result = extract_info(sample_text)
-print("\nFinal Extracted JSON:")
-print(json.dumps(result, indent=2, ensure_ascii=False))
+print(structured_data)
