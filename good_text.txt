@@ -1,0 +1,86 @@
+import pandas as pd
+import json
+import re
+from transformers import pipeline
+from sentence_transformers import SentenceTransformer, util
+
+# === Load CSV ===
+df = pd.read_csv("results3.csv")
+record_text = str(df.loc[3, "context"])  # Take 4th record (index 3)
+
+# === Define fields with definitions ===
+FIELD_DEFINITIONS = {
+    "Visit Reason": "Main complaint or reason why the patient came to the hospital.",
+    "History": "Past medical history, chronic conditions, or relevant background information.",
+    "Diagnosis": "The doctor's assessment or suspected/confirmed disease.",
+    "Clinical Details": "Signs, symptoms, and clinical observations noted during examination.",
+    "Lab Results": "Blood tests or laboratory values with findings.",
+    "Treatment Plan": "Medications, therapies, or planned interventions.",
+    "Vital Signs": "Objective measurements such as blood pressure, pulse, temperature, SpO2.",
+    "Exam Results": "Findings from physical examination.",
+    "Imaging Test Results": "Findings from imaging such as X-ray, CT, MRI, etc.",
+    "Hospital Course": "Description of what happened during hospitalization or ER stay.",
+    "Discharge Plan": "Follow-up instructions, discharge medications, and next steps.",
+    "Full HPI": "Narrative description of the patient's history of present illness.",
+    "Full Assessment and Plan": "Complete summary of assessment and treatment plan."
+}
+
+FIELDS = list(FIELD_DEFINITIONS.keys())
+
+# === Load Models ===
+extractor = pipeline("text2text-generation", model="google/flan-t5-base")
+embedder = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+
+# === Build Prompt ===
+prompt = (
+    "Extract the following fields from the medical record and return the result in strict JSON format. "
+    "The input text may not explicitly contain the field names, but may contain relevant information. "
+    "Use the field definitions below to identify the correct information, even if phrasing is different. "
+    "If a field is not explicitly mentioned, infer the most relevant short phrase from the text.\n\n"
+    "Fields with definitions:\n"
+)
+
+for field, definition in FIELD_DEFINITIONS.items():
+    prompt += f"{field}: {definition}\n"
+
+prompt += f"\nReturn output as JSON with each field as a key and a list of short extracted phrases as the value.\n\nMedical Record:\n{record_text}"
+
+# === Run Model ===
+response = extractor(prompt, max_length=1834, clean_up_tokenization_spaces=True)[0]["generated_text"]
+
+# === Try Parsing JSON Output ===
+try:
+    structured_data = json.loads(response)
+except:
+    structured_data = {}
+
+# === Fallback with Cosine Similarity for Missing Fields ===
+sentences = [s.strip() for s in re.split(r'[.?!]\s+', record_text) if s.strip()]
+sentence_embeddings = embedder.encode(sentences, convert_to_tensor=True)
+
+for field in FIELDS:
+    value = structured_data.get(field, [])
+    if not value or (isinstance(value, list) and len(value) == 0):
+        # Find most semantically similar sentence to the field definition
+        field_embedding = embedder.encode(FIELD_DEFINITIONS[field], convert_to_tensor=True)
+        similarity_scores = util.cos_sim(field_embedding, sentence_embeddings)[0]
+        best_idx = int(similarity_scores.argmax())
+        structured_data[field] = [sentences[best_idx]]
+
+# === Clean Unwanted Characters (\t, \n, extra spaces) ===
+cleaned_data = {}
+for field, values in structured_data.items():
+    cleaned_values = []
+    if isinstance(values, list):
+        for v in values:
+            v_clean = re.sub(r'[\t\n\r]+', ' ', str(v)).strip()
+            v_clean = re.sub(r'\s+', ' ', v_clean)
+            cleaned_values.append(v_clean)
+    else:
+        v_clean = re.sub(r'[\t\n\r]+', ' ', str(values)).strip()
+        v_clean = re.sub(r'\s+', ' ', v_clean)
+        cleaned_values = [v_clean]
+    cleaned_data[field] = cleaned_values
+
+# === Final Output ===
+print(json.dumps(cleaned_data, indent=2, ensure_ascii=False))
