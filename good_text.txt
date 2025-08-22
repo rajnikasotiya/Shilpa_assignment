@@ -39,7 +39,8 @@ prompt = (
     "The input text may not explicitly contain the field names, but may contain relevant information. "
     "Use the field definitions below to identify the correct information, even if phrasing is different. "
     "For fields marked as 'Narrative', return a complete sentence. "
-    "For fields marked as 'Short', return concise keywords/phrases.\n\n"
+    "For fields marked as 'Short', return concise keywords/phrases. "
+    "If no relevant information is found for a field, return an empty list for that field.\n\n"
     "Fields with definitions and output style:\n"
 )
 
@@ -62,36 +63,40 @@ except:
 sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', record_text) if s.strip()]
 sentence_embeddings = embedder.encode(sentences, convert_to_tensor=True)
 
-# === Fallback with Cosine Similarity respecting field type ===
+# === Fallback with Cosine Similarity OR empty if nothing found ===
 for field in FIELDS:
     value = structured_data.get(field, [])
     if not value or (isinstance(value, list) and len(value) == 0):
-        query_text = FIELD_DEFINITIONS[field]
-        field_embedding = embedder.encode(query_text, convert_to_tensor=True)
-        similarity_scores = util.cos_sim(field_embedding, sentence_embeddings)[0]
-        best_idx = int(similarity_scores.argmax())
+        if sentences:
+            query_text = FIELD_DEFINITIONS[field]
+            field_embedding = embedder.encode(query_text, convert_to_tensor=True)
+            similarity_scores = util.cos_sim(field_embedding, sentence_embeddings)[0]
+            best_idx = int(similarity_scores.argmax())
+            best_score = float(similarity_scores[best_idx])
 
-        # Narrative fields → pick full sentence
-        # Short fields → pick keywords (few most relevant words)
-        fallback_text = sentences[best_idx]
-        if field not in NARRATIVE_FIELDS:
-            # Extract short keywords (basic heuristic: remove stopwords-like patterns)
-            fallback_text = " ".join([w for w in fallback_text.split() if len(w) > 2][:6])
-        structured_data[field] = [fallback_text.strip()]
+            # Use fallback only if similarity is reasonably high (>0.35 threshold)
+            if best_score > 0.35:
+                fallback_text = sentences[best_idx]
+                if field not in NARRATIVE_FIELDS:
+                    # Extract keywords (first few significant words)
+                    fallback_text = " ".join([w for w in fallback_text.split() if len(w) > 2][:6])
+                structured_data[field] = [fallback_text.strip()]
+            else:
+                structured_data[field] = []  # No relevant info found
+        else:
+            structured_data[field] = []  # No sentences in text → empty
 
 # === Clean Unwanted Characters (\t, \n, extra spaces) ===
 cleaned_data = {}
-for field, values in structured_data.items():
+for field in FIELDS:
+    values = structured_data.get(field, [])
     cleaned_values = []
     if isinstance(values, list):
         for v in values:
             v_clean = re.sub(r'[\t\n\r]+', ' ', str(v)).strip()
             v_clean = re.sub(r'\s+', ' ', v_clean)
-            cleaned_values.append(v_clean)
-    else:
-        v_clean = re.sub(r'[\t\n\r]+', ' ', str(values)).strip()
-        v_clean = re.sub(r'\s+', ' ', v_clean)
-        cleaned_values = [v_clean]
+            if v_clean:  # Only keep non-empty values
+                cleaned_values.append(v_clean)
     cleaned_data[field] = cleaned_values
 
 # === Final Output ===
