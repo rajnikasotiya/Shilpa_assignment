@@ -8,7 +8,7 @@ from sentence_transformers import SentenceTransformer, util
 df = pd.read_csv("results3.csv")
 record_text = str(df.loc[3, "context"])  # Take 4th record (index 3)
 
-# === Define fields with definitions ===
+# === Field Definitions ===
 FIELD_DEFINITIONS = {
     "Visit Reason": "Main complaint or reason why the patient came to the hospital.",
     "History": "Past medical history, chronic conditions, or relevant background information.",
@@ -25,7 +25,6 @@ FIELD_DEFINITIONS = {
     "Full Assessment and Plan": "Complete summary of assessment and treatment plan."
 }
 
-# === Separate narrative vs short-phrase fields ===
 NARRATIVE_FIELDS = {"Full HPI", "Hospital Course", "Full Assessment and Plan"}
 FIELDS = list(FIELD_DEFINITIONS.keys())
 
@@ -33,15 +32,14 @@ FIELDS = list(FIELD_DEFINITIONS.keys())
 extractor = pipeline("text2text-generation", model="google/flan-t5-base")
 embedder = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
 
-# === Build Prompt with distinction ===
+# === Prompt ===
 prompt = (
     "Extract the following fields from the medical record and return the result in strict JSON format. "
     "The input text may not explicitly contain the field names, but may contain relevant information. "
-    "Use the field definitions below to identify the correct information, even if phrasing is different. "
-    "For fields marked as 'Narrative', return a complete sentence. "
-    "For fields marked as 'Short', return concise keywords/phrases. "
-    "If no relevant information is found for a field, return an empty list for that field.\n\n"
-    "Fields with definitions and output style:\n"
+    "For fields marked as 'Narrative', return a complete sentence that clearly defines the field. "
+    "For fields marked as 'Short', return only short phrases or keywords that strictly define the field. "
+    "If no clear, defining information is found for a field, return an empty list for that field.\n\n"
+    "Fields with definitions and expected style:\n"
 )
 
 for field, definition in FIELD_DEFINITIONS.items():
@@ -59,11 +57,11 @@ try:
 except:
     structured_data = {}
 
-# === Prepare sentences for fallback ===
+# === Prepare text for fallback ===
 sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', record_text) if s.strip()]
 sentence_embeddings = embedder.encode(sentences, convert_to_tensor=True)
 
-# === Fallback with Cosine Similarity OR empty if nothing found ===
+# === Fallback (Only if strongly relevant ≥0.6) ===
 for field in FIELDS:
     value = structured_data.get(field, [])
     if not value or (isinstance(value, list) and len(value) == 0):
@@ -74,30 +72,27 @@ for field in FIELDS:
             best_idx = int(similarity_scores.argmax())
             best_score = float(similarity_scores[best_idx])
 
-            # Use fallback only if similarity is reasonably high (>0.35 threshold)
-            if best_score > 0.35:
+            if best_score >= 0.6:  # Strict threshold: only take strongly relevant sentences
                 fallback_text = sentences[best_idx]
                 if field not in NARRATIVE_FIELDS:
-                    # Extract keywords (first few significant words)
                     fallback_text = " ".join([w for w in fallback_text.split() if len(w) > 2][:6])
                 structured_data[field] = [fallback_text.strip()]
             else:
-                structured_data[field] = []  # No relevant info found
+                structured_data[field] = []  # No truly relevant info found
         else:
-            structured_data[field] = []  # No sentences in text → empty
+            structured_data[field] = []  # No sentences at all
 
-# === Clean Unwanted Characters (\t, \n, extra spaces) ===
+# === Clean Output (remove tabs/newlines/extra spaces) ===
 cleaned_data = {}
 for field in FIELDS:
     values = structured_data.get(field, [])
     cleaned_values = []
-    if isinstance(values, list):
-        for v in values:
-            v_clean = re.sub(r'[\t\n\r]+', ' ', str(v)).strip()
-            v_clean = re.sub(r'\s+', ' ', v_clean)
-            if v_clean:  # Only keep non-empty values
-                cleaned_values.append(v_clean)
+    for v in values:
+        v_clean = re.sub(r'[\t\n\r]+', ' ', str(v)).strip()
+        v_clean = re.sub(r'\s+', ' ', v_clean)
+        if v_clean:
+            cleaned_values.append(v_clean)
     cleaned_data[field] = cleaned_values
 
-# === Final Output ===
+# === Final Strict Output ===
 print(json.dumps(cleaned_data, indent=2, ensure_ascii=False))
