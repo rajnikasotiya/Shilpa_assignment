@@ -7,8 +7,8 @@ from evaluate import load
 
 # === Load CSV ===
 df = pd.read_csv("results3.csv")
-records = df["context"].head(10).tolist()  # Take first 10 records
-gpt4_refs = df["gpt4"].head(10).tolist()   # Reference from GPT-4 column
+records = df["context"].head(10).tolist()
+gpt4_refs = df["gpt4"].head(10).tolist()  # GPT-4 column
 
 # === Field Definitions ===
 FIELD_DEFINITIONS = {
@@ -39,7 +39,7 @@ results = []
 
 # === Process Each Record ===
 for record_text in records:
-    # === Build Prompt ===
+    # === Prompt for extraction ===
     prompt = (
         "Extract the following fields from the medical record and return in JSON format. "
         "If a field is not explicitly mentioned, extract the most relevant and non-repeated phrase from the text, or leave it empty.\n"
@@ -50,7 +50,7 @@ for record_text in records:
         prompt += f"{field}: {definition}\n"
     prompt += f"\nMedical Record:\n{record_text}"
 
-    # === Run Model ===
+    # === Run LLM ===
     response = extractor(prompt, max_length=1536, clean_up_tokenization_spaces=True)[0]["generated_text"]
 
     # === Try Parsing JSON ===
@@ -64,10 +64,10 @@ for record_text in records:
     sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', record_text) if s.strip()]
     sentence_embeddings = embedder.encode(sentences, convert_to_tensor=True)
 
-    # === Fallback with Cosine Similarity OR empty ===
+    # === Fallback using Cosine Similarity ===
     for field in FIELDS:
         value = structured_data.get(field, [])
-        if not value or (isinstance(value, list) and len(value) == 0):
+        if not value:
             if sentences:
                 query_text = FIELD_DEFINITIONS[field]
                 field_embedding = embedder.encode(query_text, convert_to_tensor=True)
@@ -87,41 +87,46 @@ for record_text in records:
 
     results.append(structured_data)
 
-# === Prepare Predictions and References ===
-predictions = [" ".join(["; ".join(v) for v in r.values() if v]) for r in results]
-references = gpt4_refs  # Directly from GPT-4 column
+# === Field-wise Evaluation ===
+final_scores = {field: {"rouge": [], "cosine": [], "exact_match": []} for field in FIELDS}
 
-# === Evaluation ===
-evaluation_results = []
-ref_embeddings = embedder.encode(references, convert_to_tensor=True)
+for pred, ref_json in zip(results, gpt4_refs):
+    try:
+        reference_data = json.loads(ref_json)
+    except:
+        reference_data = {field: [] for field in FIELDS}
 
-for i, (pred, ref) in enumerate(zip(predictions, references)):
-    rouge_score = rouge.compute(predictions=[pred], references=[ref], use_stemmer=True)
-    rouge_l = rouge_score["rougeL"]
+    for field in FIELDS:
+        pred_text = " ".join(pred.get(field, []))
+        ref_text = " ".join(reference_data.get(field, []))
 
-    pred_embedding = embedder.encode(pred, convert_to_tensor=True)
-    cosine_sim = util.cos_sim(pred_embedding, ref_embeddings[i]).item()
-    exact_match = 1 if pred.strip() == ref.strip() else 0
+        # ROUGE-L
+        if ref_text and pred_text:
+            rouge_score = rouge.compute(predictions=[pred_text], references=[ref_text])["rougeL"]
+        else:
+            rouge_score = 0.0
 
-    evaluation_results.append({
-        "Record_Index": i,
-        "Prediction": pred,
-        "Reference": ref,
-        "ROUGE-L": rouge_l,
-        "Cosine_Similarity": cosine_sim,
-        "Exact_Match": exact_match
-    })
+        # Cosine Similarity
+        if ref_text and pred_text:
+            emb_pred = embedder.encode(pred_text, convert_to_tensor=True)
+            emb_ref = embedder.encode(ref_text, convert_to_tensor=True)
+            cosine_sim = float(util.cos_sim(emb_pred, emb_ref))
+        else:
+            cosine_sim = 0.0
 
-# === Store Final Evaluation ===
-eval_df = pd.DataFrame(evaluation_results)
-avg_rouge = eval_df["ROUGE-L"].mean()
-avg_cosine = eval_df["Cosine_Similarity"].mean()
-avg_exact = eval_df["Exact_Match"].mean()
+        # Exact Match
+        exact_match = 1.0 if pred_text.lower() == ref_text.lower() and pred_text != "" else 0.0
 
-print("\n=== Final Evaluation Metrics ===")
-print(f"Average ROUGE-L: {avg_rouge:.4f}")
-print(f"Average Cosine Similarity: {avg_cosine:.4f}")
-print(f"Exact Match Rate: {avg_exact:.4f}")
+        final_scores[field]["rouge"].append(rouge_score)
+        final_scores[field]["cosine"].append(cosine_sim)
+        final_scores[field]["exact_match"].append(exact_match)
 
-eval_df.to_csv("evaluation_results.csv", index=False)
-print("\nDetailed results saved to 'evaluation_results.csv'")
+# === Average Scores per Field ===
+for field in FIELDS:
+    rouge_avg = sum(final_scores[field]["rouge"]) / len(final_scores[field]["rouge"])
+    cosine_avg = sum(final_scores[field]["cosine"]) / len(final_scores[field]["cosine"])
+    exact_avg = sum(final_scores[field]["exact_match"]) / len(final_scores[field]["exact_match"])
+    print(f"\nField: {field}")
+    print(f"  ROUGE-L: {rouge_avg:.3f}")
+    print(f"  Cosine Similarity: {cosine_avg:.3f}")
+    print(f"  Exact Match: {exact_avg:.3f}")
