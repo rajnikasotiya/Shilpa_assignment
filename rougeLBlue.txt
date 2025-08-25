@@ -1,0 +1,115 @@
+import pandas as pd
+import re
+import json
+from transformers import pipeline
+from sentence_transformers import SentenceTransformer, util
+from datasets import load_metric
+
+# === Load CSV ===
+df = pd.read_csv("results3.csv")
+records = df["context"].head(10).tolist()
+gpt4_references = df["gpt4"].head(10).tolist()
+
+# === Field Definitions ===
+FIELD_DEFINITIONS = {
+    "Visit Reason": "Main complaint or reason why the patient came to the hospital.",
+    "History": "Past medical history, chronic conditions, or relevant background information.",
+    "Diagnosis": "The doctor's assessment or suspected/confirmed disease.",
+    "Clinical Details": "Signs, symptoms, and clinical observations noted during examination.",
+    "Lab Results": "Blood tests or laboratory values with findings.",
+    "Treatment Plan": "Medications, therapies, or planned interventions.",
+    "Vital Signs": "Objective measurements such as blood pressure, pulse, temperature, SpO2.",
+    "Exam Results": "Findings from physical examination.",
+    "Imaging Test Results": "Findings from imaging such as X-ray, ECG, MRI, CT.",
+    "Hospital Course": "Description of what happened during hospitalization or stay.",
+    "Discharge Plan": "Follow-up instructions, discharge medications, and next steps.",
+    "Full HPI": "Narrative description of the patient's history of present illness.",
+    "Full Assessment and Plan": "Complete summary of assessment and treatment plan."
+}
+
+FIELDS = list(FIELD_DEFINITIONS.keys())
+NARRATIVE_FIELDS = {"Full HPI", "Full Assessment and Plan"}
+
+# === Load Models ===
+extractor = pipeline("text2text-generation", model="google/flan-t5-base")
+embedder = SentenceTransformer("all-MiniLM-L6-v2")
+
+# === Metrics ===
+rouge = load_metric("rouge")
+bleu = load_metric("sacrebleu")
+
+results = []
+predictions_text = []
+references_text = []
+
+# === Process Each Record ===
+for record_text in records:
+    prompt = (
+        "Extract the following fields from the medical record and return in JSON format. "
+        "If a field is not explicitly mentioned, extract the most relevant and non-repeated phrase from the text, or leave it empty.\n"
+        "Return each field as a list of short phrases.\n\nFields to extract with definitions:\n"
+    )
+    for field, definition in FIELD_DEFINITIONS.items():
+        prompt += f"{field}: {definition}\n"
+    prompt += f"\nMedical Record:\n{record_text}"
+
+    # === Run Model ===
+    response = extractor(prompt, max_length=1536, clean_up_tokenization_spaces=True)[0]["generated_text"]
+
+    try:
+        structured_data = json.loads(response)
+        structured_data = {k: v if isinstance(v, list) else [v] for k, v in structured_data.items()}
+    except:
+        structured_data = {field: [] for field in FIELDS}
+
+    sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', record_text) if s.strip()]
+    sentence_embeddings = embedder.encode(sentences, convert_to_tensor=True)
+
+    for field in FIELDS:
+        value = structured_data.get(field, [])
+        if not value or (isinstance(value, list) and len(value) == 0):
+            if sentences:
+                query_text = FIELD_DEFINITIONS[field]
+                field_embedding = embedder.encode(query_text, convert_to_tensor=True)
+                similarity_scores = util.cos_sim(field_embedding, sentence_embeddings)[0]
+                best_idx = int(similarity_scores.argmax())
+                best_score = float(similarity_scores[best_idx])
+
+                if best_score > 0.35:
+                    fallback_text = sentences[best_idx]
+                    if field not in NARRATIVE_FIELDS:
+                        fallback_text = " ".join([w for w in fallback_text.split() if len(w) > 2][:6])
+                    structured_data[field] = [fallback_text.strip()]
+                else:
+                    structured_data[field] = []
+            else:
+                structured_data[field] = []
+
+    results.append(structured_data)
+    predictions_text.append(" ".join([" ".join(v) for v in structured_data.values()]))
+
+# === Convert GPT-4 references to plain text ===
+for ref in gpt4_references:
+    try:
+        ref_json = json.loads(ref)
+        ref_text = " ".join([" ".join(v) for v in ref_json.values()])
+        references_text.append(ref_text)
+    except:
+        references_text.append("")
+
+# === Evaluate ===
+rouge_output = rouge.compute(predictions=predictions_text, references=references_text)
+bleu_output = bleu.compute(predictions=[[p] for p in predictions_text], references=[[r for r in references_text]])
+
+# === Cosine Similarity + Exact Match ===
+pred_embeddings = embedder.encode(predictions_text, convert_to_tensor=True)
+ref_embeddings = embedder.encode(references_text, convert_to_tensor=True)
+cosine_sim_scores = [float(util.cos_sim(pred_embeddings[i], ref_embeddings[i])) for i in range(len(predictions_text))]
+
+exact_match_scores = [1.0 if predictions_text[i].strip() == references_text[i].strip() else 0.0 for i in range(len(predictions_text))]
+
+# === Final Output ===
+print("ROUGE:", rouge_output)
+print("BLEU:", bleu_output)
+print("Average Cosine Similarity:", sum(cosine_sim_scores)/len(cosine_sim_scores))
+print("Exact Match Accuracy:", sum(exact_match_scores)/len(exact_match_scores))
