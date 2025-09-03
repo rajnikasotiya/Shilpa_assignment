@@ -1,0 +1,84 @@
+import pandas as pd
+import numpy as np
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.ensemble import IsolationForest
+import matplotlib.pyplot as plt
+
+# =============================
+# 1. Load Data
+# =============================
+df = pd.read_csv("claims_data.csv")   # replace with your file
+
+# =============================
+# 2. Select Features for Anomaly Detection
+#    (numeric + categorical important columns)
+# =============================
+
+numeric_cols = [
+    "ANLYTC_PAID_AMT", "SUM_ANLYTC_PAID_AMT", "SUM_ALWD_AMT",
+    "SCRPT_CNT", "AGE_YEAR_NBR", "MBR_DURTN_NBR", "LATD_NBR", "LNGTD_NBR"
+]
+
+categorical_cols = [
+    "CLM_CNDTN_CD", "ETG_CD", "HCC_CD", "LOB_CD",
+    "MBR_ST_CD", "REFIL_IND", "FLU_IND"
+]
+
+# Keep only available columns
+numeric_cols = [c for c in numeric_cols if c in df.columns]
+categorical_cols = [c for c in categorical_cols if c in df.columns]
+
+# =============================
+# 3. Preprocess
+# =============================
+
+# Fill missing numeric with 0
+df[numeric_cols] = df[numeric_cols].fillna(0)
+
+# Encode categorical columns
+encoders = {}
+for col in categorical_cols:
+    le = LabelEncoder()
+    df[col] = df[col].astype(str).fillna("NA")
+    df[col] = le.fit_transform(df[col])
+    encoders[col] = le
+
+# Combine features
+features = numeric_cols + categorical_cols
+X = df[features]
+
+# Scale numeric values
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+
+# =============================
+# 4. Isolation Forest Anomaly Detection
+# =============================
+iso = IsolationForest(
+    n_estimators=200,
+    contamination=0.02,   # ~2% anomalies (adjust as needed)
+    random_state=42
+)
+
+df["anomaly_score"] = iso.fit_predict(X_scaled)
+df["anomaly"] = df["anomaly_score"].apply(lambda x: 1 if x == -1 else 0)
+
+# =============================
+# 5. Analyze Anomalies
+# =============================
+print("Total anomalies found:", df["anomaly"].sum())
+
+# View sample anomalies
+anomalies = df[df["anomaly"] == 1]
+print(anomalies.head(10))
+
+# =============================
+# 6. Quick Visualization
+# =============================
+if len(numeric_cols) >= 2:
+    plt.scatter(df[numeric_cols[0]], df[numeric_cols[1]],
+                c=df["anomaly"], cmap="coolwarm", s=20)
+    plt.xlabel(numeric_cols[0])
+    plt.ylabel(numeric_cols[1])
+    plt.title("Anomaly Detection (Isolation Forest)")
+    plt.show()
