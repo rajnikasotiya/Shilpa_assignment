@@ -1,0 +1,80 @@
+Find members whose average cost per prescription is abnormally high.
+SELECT 
+    MBR_KEY,
+    SUM(ANLYTC_PAID_AMT) / NULLIF(SUM(SCRPT_CNT), 0) AS avg_cost_per_rx
+FROM claims_data
+GROUP BY MBR_KEY
+HAVING avg_cost_per_rx > 1000   -- threshold depends on business rules
+ORDER BY avg_cost_per_rx DESC;
+
+Show members who had claims from more than 3 different providers on the same day (possible doctor shopping).
+SELECT 
+    MBR_KEY,
+    ANLYTC_PAID_DT,
+    COUNT(DISTINCT PROD_CD) AS provider_count
+FROM claims_data
+GROUP BY MBR_KEY, ANLYTC_PAID_DT
+HAVING COUNT(DISTINCT PROD_CD) > 3;
+
+Find members who had claims from service areas in different states on the same day (impossible travel).
+SELECT 
+    MBR_KEY,
+    ANLYTC_PAID_DT,
+    COUNT(DISTINCT SRVCAREA_ST_CD) AS states_used
+FROM claims_data
+GROUP BY MBR_KEY, ANLYTC_PAID_DT
+HAVING COUNT(DISTINCT SRVCAREA_ST_CD) > 1;
+
+Show claims where the condition (HCC/ETG) is low severity but the claim cost is very high.
+SELECT 
+    CLM_NBR,
+    HCC_CD,
+    HCC_SHRT_DESC,
+    ANLYTC_PAID_AMT
+FROM claims_data
+WHERE HCC_CD IN ('LOW1','LOW2','LOW3')   -- placeholder for low-severity codes
+  AND ANLYTC_PAID_AMT > 50000;
+
+Find members who filled the same NDC drug at two or more pharmacies within 7 days.
+SELECT 
+    MBR_KEY,
+    NDC,
+    COUNT(DISTINCT PROD_CD) AS pharmacy_count,
+    MIN(RX_FILLED_DT) AS first_fill,
+    MAX(RX_FILLED_DT) AS last_fill
+FROM claims_data
+GROUP BY MBR_KEY, NDC
+HAVING pharmacy_count > 1 
+   AND DATEDIFF(DAY, MIN(RX_FILLED_DT), MAX(RX_FILLED_DT)) <= 7;
+
+Show the top 5 most expensive drugs in each service state.
+SELECT 
+    SRVCAREA_ST_CD,
+    NDC,
+    LBL_NM,
+    SUM(ANLYTC_PAID_AMT) AS total_paid
+FROM claims_data
+GROUP BY SRVCAREA_ST_CD, NDC, LBL_NM
+QUALIFY ROW_NUMBER() OVER (PARTITION BY SRVCAREA_ST_CD ORDER BY SUM(ANLYTC_PAID_AMT) DESC) <= 5;
+
+Members who refilled early and spent more than 10,000 in total.
+SELECT 
+    MBR_KEY,
+    SUM(ANLYTC_PAID_AMT) AS total_paid,
+    COUNT(*) AS refill_claims
+FROM claims_data
+WHERE REFIL_IND = 'Y'
+GROUP BY MBR_KEY
+HAVING total_paid > 10000 
+   AND refill_claims > 5;
+
+Detect members whose total monthly paid claims jumped more than 3x compared to previous month.
+SELECT 
+    MBR_KEY,
+    ANLYTC_INCRD_YEAR_MNTH_NBR,
+    SUM(ANLYTC_PAID_AMT) AS monthly_paid,
+    LAG(SUM(ANLYTC_PAID_AMT)) OVER (PARTITION BY MBR_KEY ORDER BY ANLYTC_INCRD_YEAR_MNTH_NBR) AS prev_month_paid
+FROM claims_data
+GROUP BY MBR_KEY, ANLYTC_INCRD_YEAR_MNTH_NBR
+HAVING monthly_paid > 3 * COALESCE(prev_month_paid, 0);
+

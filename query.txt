@@ -1,8 +1,0 @@
-Find members whose average cost per prescription is abnormally high.
-Show members who had claims from more than 3 different providers on the same day (possible doctor shopping).
-Find members who had claims from service areas in different states on the same day (impossible travel).
-Show claims where the condition (HCC/ETG) is low severity but the claim cost is very high.
-Find members who filled the same NDC drug at two or more pharmacies within 7 days.
-Show the top 5 most expensive drugs in each service state.
-Members who refilled early and spent more than 10,000 in total.
-Detect members whose total monthly paid claims jumped more than 3x compared to previous month.
