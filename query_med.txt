@@ -1,0 +1,94 @@
+-- 1. This query counts the number of unique claims submitted in each reporting month. 
+-- It helps track overall claim volumes and analyze trends over different time periods.
+SELECT 
+    SNAP_YEAR_MNTH_NER AS year_month,
+    COUNT(DISTINCT CLM_NBR) AS total_claims
+FROM claims_dataset
+GROUP BY SNAP_YEAR_MNTH_NER
+ORDER BY year_month;
+
+-- 2. This query retrieves the top 5 providers with the highest number of claims. 
+-- It is useful to identify high-volume providers and focus on key contributors in the network.
+SELECT 
+    RNDRG_PROV_NM AS provider_name,
+    COUNT(DISTINCT CLM_NBR) AS claim_count
+FROM claims_dataset
+GROUP BY RNDRG_PROV_NM
+ORDER BY claim_count DESC
+LIMIT 5;
+
+-- 3. This query lists all unique insurance products available in the dataset. 
+-- It can be used to build a product catalog or validate product availability across claims.
+SELECT DISTINCT PROD_CD, PROD_NM, PROD_SHRT_DESC
+FROM claims_dataset;
+
+-- 4. This query calculates the average paid and allowed claim amounts by line of business. 
+-- It helps compare financial performance and cost patterns across different business segments.
+SELECT 
+    LOB_CD,
+    LOB_SHRT_DESC,
+    AVG(ANLYTC_PAID_AMT) AS avg_paid_amt,
+    AVG(ANLYTC_ALWD_AMT) AS avg_allowed_amt
+FROM claims_dataset
+GROUP BY LOB_CD, LOB_SHRT_DESC
+ORDER BY avg_paid_amt DESC;
+
+-- 5. This query segments members into age groups and breaks them down by gender. 
+-- It is useful for demographic analysis and helps understand population distribution.
+SELECT 
+    CASE 
+        WHEN AGE_YEAR_NBR < 18 THEN 'Child'
+        WHEN AGE_YEAR_NBR BETWEEN 18 AND 34 THEN 'Young Adult'
+        WHEN AGE_YEAR_NBR BETWEEN 35 AND 54 THEN 'Adult'
+        WHEN AGE_YEAR_NBR >= 55 THEN 'Senior'
+    END AS age_group,
+    GNDR_CD,
+    COUNT(DISTINCT MBR_KEY) AS member_count
+FROM claims_dataset
+GROUP BY age_group, GNDR_CD
+ORDER BY age_group, member_count DESC;
+
+-- 6. This query retrieves all claims that required prior authorization. 
+-- It is useful for monitoring compliance with authorization rules and auditing high-risk services.
+SELECT 
+    CLM_NBR,
+    CLM_LINE_NBR,
+    AUTHRZN_IND,
+    EDM_AUTHRZN_KEY,
+    RNDRG_PROV_NM,
+    PROD_NM
+FROM claims_dataset
+WHERE AUTHRZN_IND = 'Y'
+ORDER BY CLM_NBR;
+
+-- 7. This query identifies providers with high-cost claims where the paid amount exceeds 10,000. 
+-- It helps track expensive claims and can guide provider negotiations or cost-control strategies.
+SELECT 
+    RNDRG_PROV_NM AS provider_name,
+    COUNT(DISTINCT CLM_NBR) AS high_cost_claims,
+    SUM(ANLYTC_PAID_AMT) AS total_paid
+FROM claims_dataset
+WHERE ANLYTC_PAID_AMT > 10000
+GROUP BY RNDRG_PROV_NM
+ORDER BY total_paid DESC;
+
+-- 8. This query finds members with more than one chronic condition based on HCC codes. 
+-- It supports risk stratification, care management programs, and identifying complex patients.
+SELECT 
+    MBR_KEY,
+    COUNT(DISTINCT HCC_CD) AS chronic_condition_count
+FROM claims_dataset
+WHERE HCC_CD IS NOT NULL
+GROUP BY MBR_KEY
+HAVING COUNT(DISTINCT HCC_CD) > 1
+ORDER BY chronic_condition_count DESC;
+
+-- 9. This query summarizes claims and total paid amounts at the state level. 
+-- It provides geographic insights into claim volume and healthcare spending by region.
+SELECT 
+    SRVCAREA_ST_CD AS state,
+    COUNT(DISTINCT CLM_NBR) AS claim_count,
+    SUM(ANLYTC_PAID_AMT) AS total_paid_amt
+FROM claims_dataset
+GROUP BY SRVCAREA_ST_CD
+ORDER BY total_paid_amt DESC;
