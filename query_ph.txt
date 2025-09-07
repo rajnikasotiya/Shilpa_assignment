@@ -78,3 +78,76 @@ FROM claims_data
 GROUP BY MBR_KEY, ANLYTC_INCRD_YEAR_MNTH_NBR
 HAVING monthly_paid > 3 * COALESCE(prev_month_paid, 0);
 
+
+-- 1. Identify providers who submitted unusually high claim amounts compared to peers in the same specialty
+SELECT PROVIDER_ID, SPECIALTY_CD, AVG(ANLYTC_PAID_AMT) AS avg_claim_amt
+FROM claims_data
+GROUP BY PROVIDER_ID, SPECIALTY_CD
+HAVING AVG(ANLYTC_PAID_AMT) > (
+    SELECT AVG(ANLYTC_PAID_AMT) + 3 * STDDEV(ANLYTC_PAID_AMT)
+    FROM claims_data c
+    WHERE c.SPECIALTY_CD = claims_data.SPECIALTY_CD
+);
+
+-- 2. Find members who visited emergency rooms more than twice in a single month
+SELECT MBR_KEY, STRFTIME('%Y-%m', ANLYTC_PAID_DT) AS month, COUNT(*) AS er_visits
+FROM claims_data
+WHERE CLM_CNDTN_CD = 'ER'
+GROUP BY MBR_KEY, STRFTIME('%Y-%m', ANLYTC_PAID_DT)
+HAVING COUNT(*) > 2;
+
+-- 3. Detect claims where the place of service (POS) code is inconsistent with the procedure performed
+SELECT *
+FROM claims_data
+WHERE (POS_CD = 'HOME' AND CLM_CNDTN_CD = 'SURGERY')
+   OR (POS_CD = 'OFFICE' AND CLM_CNDTN_CD = 'INPATIENT');
+
+-- 4. Show members who switched to a high-cost brand drug despite availability of a cheaper generic equivalent
+SELECT MBR_KEY, LBL_NM, MIN(ANLYTC_PAID_DT) AS first_use, MAX(ANLYTC_PAID_DT) AS switched_date
+FROM claims_data
+WHERE MBU_BRND_TYPE_SHRT_DESC = 'BRAND'
+GROUP BY MBR_KEY, LBL_NM
+HAVING MIN(ANLYTC_PAID_DT) > (
+    SELECT MIN(ANLYTC_PAID_DT)
+    FROM claims_data g
+    WHERE g.MBR_KEY = claims_data.MBR_KEY
+      AND g.MBU_BRND_TYPE_SHRT_DESC = 'GENERIC'
+);
+
+-- 5. Find providers billing the same procedure code for more than 20 patients in a single day
+SELECT PROVIDER_ID, CLM_CNDTN_CD, ANLYTC_PAID_DT, COUNT(DISTINCT MBR_KEY) AS patient_count
+FROM claims_data
+GROUP BY PROVIDER_ID, CLM_CNDTN_CD, ANLYTC_PAID_DT
+HAVING COUNT(DISTINCT MBR_KEY) > 20;
+
+-- 6. Identify members whose claims were denied but later resubmitted with inflated costs
+SELECT MBR_KEY, CLM_NBR, MIN(ANLYTC_PAID_AMT) AS denied_amt, MAX(ANLYTC_PAID_AMT) AS resubmitted_amt
+FROM claims_data
+WHERE CLM_DISP_CD IN ('DENIED', 'RESUBMITTED')
+GROUP BY MBR_KEY, CLM_NBR
+HAVING MAX(ANLYTC_PAID_AMT) > 2 * MIN(ANLYTC_PAID_AMT);
+
+-- 7. Show cases where the paid amount greatly exceeds the billed amount
+SELECT *
+FROM claims_data
+WHERE ANLYTC_PAID_AMT > BILL_AMT;
+
+-- 8. Find pharmacies that dispensed the same drug to multiple members with the same address (possible fraud ring)
+SELECT PROVIDER_ID, NDC, MEMBER_ADDRESS, COUNT(DISTINCT MBR_KEY) AS member_count
+FROM claims_data
+GROUP BY PROVIDER_ID, NDC, MEMBER_ADDRESS
+HAVING COUNT(DISTINCT MBR_KEY) > 3;
+
+-- 9. Detect members who had overlapping inpatient and outpatient claims on the same date
+SELECT MBR_KEY, CLM_NBR, ANLYTC_PAID_DT, CLM_CNDTN_CD
+FROM claims_data
+WHERE CLM_CNDTN_CD IN ('INPATIENT', 'OUTPATIENT')
+GROUP BY MBR_KEY, ANLYTC_PAID_DT
+HAVING COUNT(DISTINCT CLM_CNDTN_CD) > 1;
+
+-- 10. Show members who had prescriptions from multiple specialties that don’t align with their diagnosis history
+SELECT MBR_KEY, NDC, CLM_CNDTN_CD, SPECIALTY_CD
+FROM claims_data
+WHERE (CLM_CNDTN_CD = 'DIABETES' AND SPECIALTY_CD NOT IN ('ENDOCRINOLOGY', 'GENERAL'))
+   OR (CLM_CNDTN_CD = 'ASTHMA' AND SPECIALTY_CD NOT IN ('PULMONOLOGY', 'GENERAL'));
+
