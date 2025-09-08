@@ -192,3 +192,166 @@ FROM claims_dataset
 GROUP BY RNDRG_PROV_NM
 ORDER BY total_paid DESC
 LIMIT 5;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+-- 20. Detect sudden cost spikes: members whose claim cost in any month 
+-- is 5x higher than their average monthly spend. This flags unusual spikes in utilization.
+WITH monthly_costs AS (
+    SELECT 
+        MBR_KEY,
+        DATE_TRUNC('month', CLM_LINE_SRVC_STRT_DT) AS claim_month,
+        SUM(ANLYTC_PAID_AMT) AS total_paid
+    FROM claims_dataset
+    GROUP BY MBR_KEY, DATE_TRUNC('month', CLM_LINE_SRVC_STRT_DT)
+),
+baseline AS (
+    SELECT 
+        MBR_KEY,
+        AVG(total_paid) AS avg_monthly_spend
+    FROM monthly_costs
+    GROUP BY MBR_KEY
+)
+SELECT 
+    m.MBR_KEY,
+    m.claim_month,
+    m.total_paid,
+    b.avg_monthly_spend
+FROM monthly_costs m
+JOIN baseline b ON m.MBR_KEY = b.MBR_KEY
+WHERE m.total_paid > 5 * b.avg_monthly_spend;
+
+-- 21. Rank providers by efficiency: lowest average paid per visit (excluding outliers).
+-- This can highlight cost-efficient providers.
+SELECT 
+    RNDRG_PROV_NM,
+    AVG(ANLYTC_PAID_AMT) AS avg_paid,
+    RANK() OVER (ORDER BY AVG(ANLYTC_PAID_AMT)) AS efficiency_rank
+FROM claims_dataset
+WHERE ANLYTC_PAID_AMT BETWEEN 50 AND 20000
+GROUP BY RNDRG_PROV_NM
+ORDER BY efficiency_rank;
+
+-- 22. Detect duplicate billing: same member, provider, date, and procedure code billed multiple times.
+-- This flags potential double billing.
+SELECT 
+    MBR_KEY,
+    RNDRG_PROV_NM,
+    PROC_CD,
+    CLM_LINE_SRVC_STRT_DT,
+    COUNT(*) AS duplicate_count
+FROM claims_dataset
+GROUP BY MBR_KEY, RNDRG_PROV_NM, PROC_CD, CLM_LINE_SRVC_STRT_DT
+HAVING COUNT(*) > 1;
+
+-- 23. Compare average costs between in-network vs out-of-network claims.
+-- This quantifies the impact of network utilization.
+SELECT 
+    INN_CD AS network_flag,
+    AVG(ANLYTC_PAID_AMT) AS avg_paid,
+    AVG(ANLYTC_ALWD_AMT) AS avg_allowed
+FROM claims_dataset
+GROUP BY INN_CD;
+
+-- 24. Identify providers whose denial rates are 2x higher than the state average.
+-- This flags providers with unusual billing patterns.
+WITH provider_denials AS (
+    SELECT 
+        RNDRG_PROV_NM,
+        SRVCAREA_ST_CD,
+        COUNT(CASE WHEN CLM_DISP_CD = 'DENIED' THEN 1 END) * 1.0 / COUNT(*) AS denial_rate
+    FROM claims_dataset
+    GROUP BY RNDRG_PROV_NM, SRVCAREA_ST_CD
+),
+state_denials AS (
+    SELECT 
+        SRVCAREA_ST_CD,
+        AVG(CASE WHEN CLM_DISP_CD = 'DENIED' THEN 1.0 ELSE 0 END) AS avg_state_denial
+    FROM claims_dataset
+    GROUP BY SRVCAREA_ST_CD
+)
+SELECT 
+    p.RNDRG_PROV_NM,
+    p.SRVCAREA_ST_CD,
+    p.denial_rate,
+    s.avg_state_denial
+FROM provider_denials p
+JOIN state_denials s ON p.SRVCAREA_ST_CD = s.SRVCAREA_ST_CD
+WHERE p.denial_rate > 2 * s.avg_state_denial;
+
+-- 25. Find top 3 most common procedures for each chronic condition (HCC code).
+-- This links procedures to conditions for care insights.
+SELECT 
+    HCC_CD,
+    PROC_CD,
+    PROC_DESC,
+    COUNT(*) AS proc_count
+FROM claims_dataset
+GROUP BY HCC_CD, PROC_CD, PROC_DESC
+QUALIFY ROW_NUMBER() OVER (PARTITION BY HCC_CD ORDER BY COUNT(*) DESC) <= 3;
+
+-- 26. Calculate readmission rate: members admitted twice within 30 days.
+-- This is a key quality metric in healthcare analytics.
+SELECT 
+    MBR_KEY,
+    COUNT(*) AS readmission_count
+FROM (
+    SELECT 
+        MBR_KEY,
+        CLM_LINE_SRVC_STRT_DT,
+        LEAD(CLM_LINE_SRVC_STRT_DT) OVER (PARTITION BY MBR_KEY ORDER BY CLM_LINE_SRVC_STRT_DT) AS next_admission
+    FROM claims_dataset
+    WHERE ER_ADMT_IND = 'Y'
+) t
+WHERE DATEDIFF(DAY, CLM_LINE_SRVC_STRT_DT, next_admission) <= 30
+GROUP BY MBR_KEY
+HAVING COUNT(*) > 0;
+
+-- 27. Identify procedures that are frequently denied (over 20% denial rate).
+-- Helps target coding/billing issues.
+SELECT 
+    PROC_CD,
+    PROC_DESC,
+    COUNT(CASE WHEN CLM_DISP_CD = 'DENIED' THEN 1 END) * 1.0 / COUNT(*) AS denial_rate
+FROM claims_dataset
+GROUP BY PROC_CD, PROC_DESC
+HAVING COUNT(*) > 100 AND (COUNT(CASE WHEN CLM_DISP_CD = 'DENIED' THEN 1 END) * 1.0 / COUNT(*)) > 0.2
+ORDER BY denial_rate DESC;
+
+-- 28. Analyze drug cost inflation: year-over-year change in average paid per drug.
+-- Helps monitor rising pharmaceutical costs.
+SELECT 
+    NDC_CD,
+    EXTRACT(YEAR FROM CLM_LINE_SRVC_STRT_DT) AS claim_year,
+    AVG(ANLYTC_PAID_AMT) AS avg_paid,
+    LAG(AVG(ANLYTC_PAID_AMT)) OVER (PARTITION BY NDC_CD ORDER BY EXTRACT(YEAR FROM CLM_LINE_SRVC_STRT_DT)) AS prev_year_avg,
+    (AVG(ANLYTC_PAID_AMT) - LAG(AVG(ANLYTC_PAID_AMT)) OVER (PARTITION BY NDC_CD ORDER BY EXTRACT(YEAR FROM CLM_LINE_SRVC_STRT_DT))) * 100.0 
+      / NULLIF(LAG(AVG(ANLYTC_PAID_AMT)) OVER (PARTITION BY NDC_CD ORDER BY EXTRACT(YEAR FROM CLM_LINE_SRVC_STRT_DT)), 0) AS yoy_inflation_pct
+FROM claims_dataset
+GROUP BY NDC_CD, EXTRACT(YEAR FROM CLM_LINE_SRVC_STRT_DT);
+
+-- 29. Detect provider upcoding: when billed DRG codes correspond to higher severity than diagnosis suggests.
+-- This checks mismatch between DRG and HCC severity.
+SELECT 
+    CLM_NBR,
+    RNDRG_PROV_NM,
+    DRG_CD,
+    HCC_CD,
+    HCC_RISK_SCORE,
+    DRG_SEVERITY_LEVEL
+FROM claims_dataset
+WHERE DRG_SEVERITY_LEVEL > HCC_RISK_SCORE + 2;  -- arbitrary gap rule
+
+
