@@ -92,3 +92,103 @@ SELECT
 FROM claims_dataset
 GROUP BY SRVCAREA_ST_CD
 ORDER BY total_paid_amt DESC;
+
+
+
+-- 10. This query summarizes the total claims and total paid amount by state.  
+-- It helps compare cost and utilization geographically.  
+SELECT 
+    SRVCAREA_ST_CD AS state,
+    COUNT(DISTINCT CLM_NBR) AS total_claims,
+    SUM(ANLYTC_PAID_AMT) AS total_paid
+FROM claims_dataset
+GROUP BY SRVCAREA_ST_CD
+ORDER BY total_paid DESC;
+
+-- 11. This query retrieves the top 5 most expensive procedures (by average paid amount).  
+-- It helps identify high-cost medical services.  
+SELECT 
+    PROC_CD,
+    PROC_DESC,
+    AVG(ANLYTC_PAID_AMT) AS avg_paid
+FROM claims_dataset
+GROUP BY PROC_CD, PROC_DESC
+ORDER BY avg_paid DESC
+LIMIT 5;
+
+-- 12. This query finds the distribution of claims by gender.  
+-- It is useful for gender-based utilization analysis.  
+SELECT 
+    GNDR_CD,
+    COUNT(DISTINCT CLM_NBR) AS claim_count,
+    SUM(ANLYTC_PAID_AMT) AS total_paid
+FROM claims_dataset
+GROUP BY GNDR_CD;
+
+-- 13. This query shows the average hospital length of stay per admission.  
+-- It helps monitor inpatient utilization.  
+SELECT 
+    MBR_KEY,
+    AVG(DATEDIFF(DAY, CLM_LINE_SRVC_STRT_DT, CLM_LINE_SRVC_END_DT)) AS avg_length_of_stay
+FROM claims_dataset
+WHERE ER_ADMT_IND = 'Y'
+GROUP BY MBR_KEY;
+
+-- 14. This query identifies providers who submitted claims across multiple states.  
+-- It flags multi-state billing patterns.  
+SELECT 
+    RNDRG_PROV_NM,
+    COUNT(DISTINCT SRVCAREA_ST_CD) AS state_count
+FROM claims_dataset
+GROUP BY RNDRG_PROV_NM
+HAVING COUNT(DISTINCT SRVCAREA_ST_CD) > 1;
+
+-- 15. This query calculates the denial rate by provider.  
+-- It helps track providers with a high proportion of denied claims.  
+SELECT 
+    RNDRG_PROV_NM,
+    COUNT(CASE WHEN CLM_DISP_CD = 'DENIED' THEN 1 END) * 1.0 / COUNT(*) AS denial_rate
+FROM claims_dataset
+GROUP BY RNDRG_PROV_NM
+ORDER BY denial_rate DESC;
+
+-- 16. This query shows the top 10 diagnosis codes based on frequency.  
+-- It helps identify the most common conditions.  
+SELECT 
+    DIAG_CD,
+    DIAG_DESC,
+    COUNT(*) AS claim_count
+FROM claims_dataset
+GROUP BY DIAG_CD, DIAG_DESC
+ORDER BY claim_count DESC
+LIMIT 10;
+
+-- 17. This query finds members with more than 10 claims in a single month.  
+-- It flags high utilizers.  
+SELECT 
+    MBR_KEY,
+    DATE_TRUNC('month', CLM_LINE_SRVC_STRT_DT) AS claim_month,
+    COUNT(DISTINCT CLM_NBR) AS claim_count
+FROM claims_dataset
+GROUP BY MBR_KEY, DATE_TRUNC('month', CLM_LINE_SRVC_STRT_DT)
+HAVING COUNT(DISTINCT CLM_NBR) > 10
+ORDER BY claim_count DESC;
+
+-- 18. This query calculates the average paid amount per member per year.  
+-- It helps understand per-member costs.  
+SELECT 
+    MBR_KEY,
+    EXTRACT(YEAR FROM CLM_LINE_SRVC_STRT_DT) AS claim_year,
+    AVG(ANLYTC_PAID_AMT) AS avg_paid_per_member
+FROM claims_dataset
+GROUP BY MBR_KEY, EXTRACT(YEAR FROM CLM_LINE_SRVC_STRT_DT);
+
+-- 19. This query lists the top 5 providers by total paid amount (not just claim count).  
+-- It highlights providers driving the highest costs.  
+SELECT 
+    RNDRG_PROV_NM,
+    SUM(ANLYTC_PAID_AMT) AS total_paid
+FROM claims_dataset
+GROUP BY RNDRG_PROV_NM
+ORDER BY total_paid DESC
+LIMIT 5;
