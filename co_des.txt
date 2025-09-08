@@ -1,0 +1,96 @@
+
+#Column Descriptions
+
+Member / Membership Information**
+
+* **MBR\_KEY** – Unique key/ID for a member (internal identifier).
+* **MCID** – Member Client ID (identifier used by client/system).
+* **MBRSHP\_SOR\_CD** – Membership source code (system/origin of enrollment).
+* **MBR\_ST\_CD** – Member state code (two-letter state abbreviation).
+* **MBR\_ST\_NM** – Full name of the member’s state.
+* **CLNT\_AGE\_MNTH\_CD** – Age of the member in months (coded).
+* **AGE\_YEAR\_NM** – Age group/category name (e.g., "30–39 years").
+* **AGE\_YEAR\_NBR** – Exact member age in years.
+* **MBR\_DURTN\_NM** – Membership duration group (e.g., “1–3 years”).
+* **MBR\_DURTN\_NBR** – Numeric membership duration (years).
+
+Claim Information**
+
+* **ANLYTC\_INCRD\_YEAR\_MNTH\_NBR** – Year-month number when claim incurred (YYYYMM).
+* **ANLYTC\_PAID\_DT** – Date claim was paid (analytics format).
+* **ANLYTC\_PAID\_AMT** – Paid amount for the claim (analytics).
+* **SUM\_ANLYTC\_PAID\_AMT** – Total paid amount across claims.
+* **SUM\_ALWD\_AMT** – Total allowed amount across claims.
+* **CLM\_CNDTN\_CD** – Claim condition/diagnosis code.
+* **CLM\_CNDTN\_NM** – Claim condition/diagnosis description.
+* **CLM\_NBR** – Claim number (unique ID for claim).
+* **CLM\_LINE\_NBR** – Claim line number (service line within claim).
+* **CLM\_ADJSTMNT\_KEY** – Key linking adjusted claims.
+* **CLM\_DISP\_CD** – Claim disposition code (status of claim).
+* **ADJDCTN\_DT** – Adjudication date (when claim was finalized).
+* **GL\_POST\_DT** – General ledger posting date.
+* **LATD\_NBR** – Latitude of service location.
+* **LNGTD\_NBR** – Longitude of service location.
+* **FLU\_IND** – Indicator if claim/service relates to influenza.
+
+Condition Grouping / Risk Adjustment**
+
+* **ETG\_CD** – Episode Treatment Group code.
+* **ETG\_NM** – Name/description of ETG.
+* **HCC\_CD** – Hierarchical Condition Category code.
+* **HCC\_SHRT\_DESC** – Short description of HCC.
+* **HCC\_CMRCL\_MNGMNT\_LOW\_CD** – Low-level commercial management HCC code.
+* **HCC\_CMRCL\_MNGMNT\_MEDM\_CD** – Medium-level commercial management HCC code.
+* **HCC\_CMRCL\_MNGMNT\_HIGH\_CD** – High-level commercial management HCC code.
+* **HCC\_CMRCL\_MNGMNT\_LOW\_SHRT\_DESC** – Short description of low HCC group.
+* **HCC\_CMRCL\_MNGMNT\_MEDM\_SHRT\_DESC** – Short description of medium HCC group.
+* **HCC\_CMRCL\_MNGMNT\_HIGH\_SHRT\_DESC** – Short description of high HCC group.
+
+Referral / Program Indicators**
+
+* MPR\_IND** – Medication possession ratio indicator (adherence).
+* RFR\_IND** – Referral indicator (whether referral present).
+
+
+
+Pharmacy / Prescription Data**
+
+* **SCRPT\_CNT** – Number of prescriptions/claims count.
+* **RX\_FILLED\_DT** – Date prescription was filled.
+* **REFIL\_IND** – Refill indicator (new vs. refill).
+* **NDC** – National Drug Code (unique identifier for drug).
+* **LBL\_NM** – Label name of the drug (brand/generic name).
+* **GPI** – Generic Product Identifier (hierarchical drug code).
+* **GPI\_02\_GRP\_CD** – GPI level 2 (therapeutic group code).
+* **GPI\_02\_GRP\_NM** – GPI level 2 group name.
+* **GPI\_04\_CLS\_CD** – GPI level 4 class code.
+* **GPI\_04\_CLS\_NM** – GPI level 4 class name.
+* **GPI\_06\_SUBCLS\_CD** – GPI level 6 subclass code.
+* **GPI\_06\_SUBCLS\_NM** – GPI level 6 subclass name.
+* **GPI\_08\_NM\_BSIC\_CD** – GPI level 8 basic drug code.
+* **GPI\_08\_NM\_BSIC\_NM** – GPI level 8 basic drug name.
+* **GPI\_10\_NM\_EXTNDD\_CD** – GPI level 10 extended drug code.
+* **GPI\_10\_NM\_EXTNDD\_NM** – GPI level 10 extended drug name.
+* **GPI\_12\_DOSE\_FORM\_CD** – GPI level 12 dose form code.
+* **GPI\_RCRD\_TYPE\_CD** – GPI record type code.
+
+Line of Business / Service Area**
+
+* **LOB\_CD** – Line of business code (commercial, Medicaid, Medicare, etc.).
+* **LOB\_SHRT\_DESC** – Short description of line of business.
+* **SRVCAREA\_ST\_CD** – Service area state code.
+* **SRVCAREA\_ST\_SHRT\_DESC** – Service area state description.
+* **RSTTD\_SRVCAREA\_CD** – Restricted service area code.
+
+Product / Business Unit
+
+* **PROD\_CD** – Product code (insurance product identifier).
+* **PROD\_SHRT\_DESC** – Short description of product.
+* **MBU\_CF\_NM** – Member business unit (customer-facing name).
+* **MBU\_TYPE\_SHRT\_DESC** – Member business unit type short description.
+* **MBU\_TYPE\_CD** – Member business unit type code.
+* **MBU\_BRND\_TYPE\_SHRT\_DESC** – Member business unit brand type description.
+* **MBU\_CLS\_CD** – Member business unit class code.
+* **MBU\_CLS\_SHRT\_DESC** – Short description of MBU class.
+* **MBU\_CLS\_LONG\_DESC** – Long description of MBU class.
+
