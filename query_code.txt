@@ -9,7 +9,7 @@ CSV_PATH = "COC_pharmacy_claims_sample.csv"   # your file
 df = pd.read_csv(CSV_PATH)
 
 print("CSV Loaded. Shape:", df.shape)
-print("Columns:", df.columns.tolist()[:10], "...")  # preview
+print("Columns:", df.columns.tolist()[:10], "...")  # preview first 10
 
 # ==========================
 # 2. Load Text-to-SQL Model
@@ -19,24 +19,31 @@ tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME)
 
 # ==========================
-# 3. Text-to-SQL Function with Few-Shot Prompting
+# 3. Text-to-SQL Function with Stricter Prompt
 # ==========================
-def text_to_sql(question: str, schema: str = "") -> str:
+def text_to_sql(question: str) -> str:
     """
-    Converts a natural language question into an SQL query using few-shot examples.
+    Converts a natural language question into a DuckDB-compatible SQL query.
     """
     few_shot_examples = f"""
-You are a SQL expert. 
-Only use the table: claims_data
+You are a SQL expert.
+Use only ONE table: claims_data
 Columns available: {', '.join(df.columns.tolist())}
 
-Important rules:
-- Do NOT invent new tables (only use claims_data).
-- Do NOT invent new columns.
-- If the query involves totals or averages, compute them directly from claims_data.
-- Always SELECT from claims_data.
+Strict rules:
+- Only use claims_data
+- Do NOT invent new tables
+- Do NOT use JOIN
+- Do NOT use nested SELECT
+- Always return valid SQL that DuckDB can run
 
 ### Examples
+Question: Members who spent more than 10000 in total.
+SQL: SELECT MBR_KEY, SUM(ANLYTC_PAID_AMT) AS total_spent
+     FROM claims_data
+     GROUP BY MBR_KEY
+     HAVING SUM(ANLYTC_PAID_AMT) > 10000;
+
 Question: Show the top 5 most expensive drugs.
 SQL: SELECT LBL_NM, AVG(ANLYTC_PAID_AMT) AS avg_cost
      FROM claims_data
@@ -44,18 +51,12 @@ SQL: SELECT LBL_NM, AVG(ANLYTC_PAID_AMT) AS avg_cost
      ORDER BY avg_cost DESC
      LIMIT 5;
 
-Question: Find members who spent more than 10000 in total.
-SQL: SELECT MBR_KEY, SUM(ANLYTC_PAID_AMT) AS total_spent
-     FROM claims_data
-     GROUP BY MBR_KEY
-     HAVING SUM(ANLYTC_PAID_AMT) > 10000;
-
-Question: Members who refilled early and spent more than 10000 in total.
-SQL: SELECT MBR_KEY, SUM(ANLYTC_PAID_AMT) AS total_spent
+Question: Find members who refilled early.
+SQL: SELECT MBR_KEY, COUNT(*) AS refill_count
      FROM claims_data
      WHERE REFIL_IND = 1
      GROUP BY MBR_KEY
-     HAVING SUM(ANLYTC_PAID_AMT) > 10000;
+     HAVING COUNT(*) > 0;
 
 ### Now generate:
 Question: {question}
@@ -65,9 +66,9 @@ SQL:
     outputs = model.generate(inputs, max_length=256, num_beams=4, early_stopping=True)
     sql_query = tokenizer.decode(outputs[0], skip_special_tokens=True)
 
-    # ✅ Hard fix: ensure table name is claims_data
-    if "FROM" in sql_query and "claims_data" not in sql_query:
-        sql_query = sql_query.replace("FROM", "FROM claims_data")
+    # ✅ Extra safety: force FROM claims_data
+    if "FROM" not in sql_query.upper():
+        sql_query += " FROM claims_data"
 
     return sql_query
 
@@ -92,7 +93,7 @@ while True:
     try:
         result = duckdb.query(sql_query).to_df()
         print("\nQuery Result:")
-        print(result.head(10))  # show top 10 rows
+        print(result.head(10))  # top 10 rows
     except Exception as e:
         print("\nSQL Execution Failed:", e)
 
