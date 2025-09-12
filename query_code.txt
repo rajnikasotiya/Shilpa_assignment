@@ -5,11 +5,11 @@ from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 # ==========================
 # 1. Load CSV file
 # ==========================
-CSV_PATH = "COC_pharmacy_claims_sample.csv"   # <-- updated file name
+CSV_PATH = "COC_pharmacy_claims_sample.csv"   # your file
 df = pd.read_csv(CSV_PATH)
 
-print("✅ CSV Loaded. Shape:", df.shape)
-print("Columns:", df.columns.tolist()[:10], "...")  # show first 10 columns
+print("CSV Loaded. Shape:", df.shape)
+print("Columns:", df.columns.tolist()[:10], "...")  # preview
 
 # ==========================
 # 2. Load Text-to-SQL Model
@@ -19,53 +19,24 @@ tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME)
 
 # ==========================
-# 3. Schema with Descriptions
+# 3. Text-to-SQL Function with Few-Shot Prompting
 # ==========================
-col_descriptions = {
-    "MBR_KEY": "Unique member identifier",
-    "MCID": "Member claim ID",
-    "MBRSHP_SOR_CD": "Membership source code",
-    "ANLYTC_INCRD_YEAR_MNTH_NBR": "Year and month when claim was incurred",
-    "ANLYTC_PAID_DT": "Date claim was paid",
-    "CLM_CNDTN_CD": "Claim condition code",
-    "CLM_CNDTN_NM": "Claim condition name",
-    "ETG_CD": "Episode treatment group code",
-    "ETG_NM": "Episode treatment group name",
-    "HCC_CD": "Hierarchical condition category code",
-    "HCC_SHRT_DESC": "Hierarchical condition category description",
-    "MPR_IND": "Medication possession ratio indicator",
-    "RFR_IND": "Referral indicator",
-    "ANLYTC_PAID_AMT": "Paid claim amount",
-    "SCRPT_CNT": "Prescription count",
-    "RX_FILLED_DT": "Date prescription was filled",
-    "REFIL_IND": "Refill indicator",
-    "ADJDCTN_DT": "Claim adjudication date",
-    "CLM_DISP_CD": "Claim disposition code",
-    "NDC": "National drug code",
-    "LBL_NM": "Drug label name",
-    "RSTTD_SRVCAREA_CD": "Restricted service area code",
-    "PROD_CD": "Product code",
-    "LOB_CD": "Line of business code",
-    "LOB_SHRT_DESC": "Line of business description",
-    "SRVCAREA_ST_CD": "Service area state code",
-    "SRVCAREA_ST_SHRT_DESC": "Service area state description",
-    "MBR_ST_CD": "Member state code",
-    "MBR_ST_NM": "Member state name",
-    "AGE_YEAR_NBR": "Member age in years",
-    "CLM_NBR": "Claim number",
-    "CLM_LINE_NBR": "Claim line number",
-    "GL_POST_DT": "General ledger posting date",
-    "FLU_IND": "Flu indicator"
-}
-schema_info = "Table: claims_data, Columns: " + ", ".join(
-    [f"{col} ({desc})" for col, desc in col_descriptions.items()]
-)
+def text_to_sql(question: str, schema: str = "") -> str:
+    """
+    Converts a natural language question into an SQL query using few-shot examples.
+    """
+    few_shot_examples = f"""
+You are a SQL expert. 
+Only use the table: claims_data
+Columns available: {', '.join(df.columns.tolist())}
 
-# ==========================
-# 4. Few-Shot Prompt Examples
-# ==========================
-few_shot_examples = """
-### Example 1
+Important rules:
+- Do NOT invent new tables (only use claims_data).
+- Do NOT invent new columns.
+- If the query involves totals or averages, compute them directly from claims_data.
+- Always SELECT from claims_data.
+
+### Examples
 Question: Show the top 5 most expensive drugs.
 SQL: SELECT LBL_NM, AVG(ANLYTC_PAID_AMT) AS avg_cost
      FROM claims_data
@@ -73,76 +44,56 @@ SQL: SELECT LBL_NM, AVG(ANLYTC_PAID_AMT) AS avg_cost
      ORDER BY avg_cost DESC
      LIMIT 5;
 
-### Example 2
-Question: Find members whose average cost per prescription is abnormally high.
-SQL: SELECT MBR_KEY, AVG(ANLYTC_PAID_AMT / NULLIF(SCRPT_CNT,0)) AS avg_cost_per_rx
+Question: Find members who spent more than 10000 in total.
+SQL: SELECT MBR_KEY, SUM(ANLYTC_PAID_AMT) AS total_spent
      FROM claims_data
      GROUP BY MBR_KEY
-     HAVING avg_cost_per_rx > 1000;
+     HAVING SUM(ANLYTC_PAID_AMT) > 10000;
 
-### Example 3
-Question: Show members who had claims from more than 3 different products on the same day.
-SQL: SELECT MBR_KEY, ANLYTC_PAID_DT, COUNT(DISTINCT PROD_CD) AS product_count
+Question: Members who refilled early and spent more than 10000 in total.
+SQL: SELECT MBR_KEY, SUM(ANLYTC_PAID_AMT) AS total_spent
      FROM claims_data
-     GROUP BY MBR_KEY, ANLYTC_PAID_DT
-     HAVING product_count > 3;
+     WHERE REFIL_IND = 1
+     GROUP BY MBR_KEY
+     HAVING SUM(ANLYTC_PAID_AMT) > 10000;
 
-### Example 4
-Question: Find members who filled the same NDC drug at two or more service areas within 7 days.
-SQL: SELECT MBR_KEY, NDC, COUNT(DISTINCT RSTTD_SRVCAREA_CD) AS service_area_count
-     FROM claims_data
-     GROUP BY MBR_KEY, NDC, RX_FILLED_DT
-     HAVING service_area_count >= 2;
-
-### Example 5
-Question: Show claims where the condition is low severity but the cost is very high.
-SQL: SELECT CLM_NBR, CLM_CNDTN_CD, CLM_CNDTN_NM, ANLYTC_PAID_AMT
-     FROM claims_data
-     WHERE HCC_CMRCL_MNGMNT_LOW_CD IS NOT NULL
-       AND ANLYTC_PAID_AMT > 10000;
-"""
-
-# ==========================
-# 5. Text-to-SQL Function
-# ==========================
-def text_to_sql(question: str, schema: str = "") -> str:
-    """
-    Converts a natural language question into an SQL query using few-shot examples.
-    """
-    prompt = f"""{few_shot_examples}
-
-### Now answer the following:
+### Now generate:
 Question: {question}
-SQL:"""
-
-    inputs = tokenizer.encode(prompt, return_tensors="pt", max_length=512, truncation=True)
+SQL:
+"""
+    inputs = tokenizer.encode(few_shot_examples, return_tensors="pt", max_length=512, truncation=True)
     outputs = model.generate(inputs, max_length=256, num_beams=4, early_stopping=True)
     sql_query = tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+    # ✅ Hard fix: ensure table name is claims_data
+    if "FROM" in sql_query and "claims_data" not in sql_query:
+        sql_query = sql_query.replace("FROM", "FROM claims_data")
+
     return sql_query
 
 # ==========================
-# 6. Register with DuckDB
+# 4. Interactive Loop
 # ==========================
 duckdb.register("claims_data", df)
 
-print("\n💬 Ask me anything about your data! (type 'exit' to quit)\n")
+print("\nAsk me anything about your data! (type 'exit' to quit)\n")
 
 while True:
     question = input("? Enter your question: ")
     if question.lower() in ["exit", "quit", "q"]:
-        print("👋 Exiting. Goodbye!")
+        print("Exiting. Goodbye!")
         break
 
     # Generate SQL
-    sql_query = text_to_sql(question, schema_info)
+    sql_query = text_to_sql(question)
     print("\nGenerated SQL:\n", sql_query)
 
-    # Try running SQL
+    # Run SQL safely
     try:
         result = duckdb.query(sql_query).to_df()
         print("\nQuery Result:")
         print(result.head(10))  # show top 10 rows
     except Exception as e:
-        print("\n⚠️ SQL Execution Failed:", e)
+        print("\nSQL Execution Failed:", e)
 
     print("\n" + "="*60 + "\n")
