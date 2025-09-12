@@ -1,0 +1,89 @@
+import pandas as pd
+import duckdb
+from transformers import pipeline
+
+# ==========================
+# 1. Load CSV file
+# ==========================
+CSV_PATH = "COC_pharmacy_claims_sample.csv"   # change this if file path differs
+df = pd.read_csv(CSV_PATH)
+
+print("✅ CSV Loaded. Shape:", df.shape)
+print("✅ Columns:", df.columns.tolist()[:10], "...")  # show first 10 columns
+
+# ==========================
+# 2. Load SQLCoder Model
+# ==========================
+MODEL_NAME = "defog/sqlcoder-7b"
+generator = pipeline("text-generation", model=MODEL_NAME, device_map="auto")
+
+# ==========================
+# 3. Schema + Few-shot Prompt
+# ==========================
+schema_info = f"""
+You are an expert SQL generator. 
+The table name is `claims_data`.
+
+Columns available:
+{', '.join(df.columns)}
+
+Write only valid DuckDB SQL. Do not invent tables or columns.
+"""
+
+few_shots = """
+Example Q: Find total paid amount by each member.
+SQL: SELECT MBR_KEY, SUM(ANLYTC_PAID_AMT) AS total_paid FROM claims_data GROUP BY MBR_KEY;
+
+Example Q: Show members who refilled early (REFIL_IND = 1).
+SQL: SELECT MBR_KEY, COUNT(*) AS refill_count FROM claims_data WHERE REFIL_IND = 1 GROUP BY MBR_KEY;
+
+Example Q: Find top 5 drugs by total spend.
+SQL: SELECT LBL_NM, SUM(ANLYTC_PAID_AMT) AS total_spend FROM claims_data GROUP BY LBL_NM ORDER BY total_spend DESC LIMIT 5;
+"""
+
+def text_to_sql(question: str) -> str:
+    """
+    Converts natural language to SQL using defog/sqlcoder-7b with schema + few-shots.
+    """
+    prompt = f"""{schema_info}
+{few_shots}
+
+Now generate SQL for this question:
+Q: {question}
+SQL:"""
+    output = generator(prompt, max_new_tokens=256, do_sample=False)[0]["generated_text"]
+    
+    # Extract SQL part only
+    sql_start = output.find("SQL:")
+    sql_query = output[sql_start+4:].strip() if sql_start != -1 else output.strip()
+    return sql_query
+
+# ==========================
+# 4. Register Table in DuckDB
+# ==========================
+duckdb.register("claims_data", df)
+
+print("\n✅ Ready! Ask me anything about your data. (type 'exit' to quit)\n")
+
+# ==========================
+# 5. Interactive Loop
+# ==========================
+while True:
+    question = input("Enter your question: ")
+    if question.lower() in ["exit", "quit", "q"]:
+        print("👋 Exiting. Goodbye!")
+        break
+
+    # Generate SQL
+    sql_query = text_to_sql(question)
+    print("\nGenerated SQL:\n", sql_query)
+
+    # Run SQL
+    try:
+        result = duckdb.query(sql_query).to_df()
+        print("\nQuery Result (top 10 rows):")
+        print(result.head(10))
+    except Exception as e:
+        print("\n❌ SQL Execution Failed:", e)
+
+    print("\n" + "="*60 + "\n")
